@@ -218,4 +218,4 @@ pip-log.txt
 *.sublime-project
 *.sublime-workspace
 
-credentials.txt
+config.txt

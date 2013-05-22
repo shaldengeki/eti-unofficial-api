@@ -127,27 +127,20 @@ class Post(BaseObject):
     self.set(postInfo)
     return self
 
-class TopicList(BaseObject):
+class BaseList(BaseObject):
   '''
-  Topic list object for ETI unofficial API.
+  Base list object for ETI unofficial API.
   '''
-  def __init__(self, db, tags=None):
+  def __init__(self, db):
     self.db = db
-    self._tags = tags
-    self._user = None
-    self._firstPost = True
-    self._order = "`lastPostTime` DESC"
+    self._table = self._user = self._topic = self._order = None
     self._start = 0
     self._limit = 50
-    self.topics = []
-  def tags(self, tags):
-    self._tags = tags
-    return self
   def user(self, user):
     self._user = user
     return self
-  def firstPost(self, firstPost):
-    self._firstPost = bool(firstPost)
+  def topic(self, topic):
+    self._topic = topic
     return self
   def order(self, order):
     self._order = order
@@ -159,13 +152,50 @@ class TopicList(BaseObject):
     self._limit = int(limit)
     return self
   def search(self, query=None):
-    self.db.table("topics").fields("`ll_topicid`")
+    self.db.table(self._table)
     if self._user is not None:
       self.db.where(userid=str(int(self._user.id)))
+    if self._topic is not None:
+      self.db.where(ll_topicid=str(int(self._topic.id)))
+    if self._order is not None:
+      self.db.order(self._order)
+    self.db.start(self._start).limit(self._limit)
+    return self
+
+class PostList(BaseList):
+  '''
+  Post list object for ETI unofficial API.
+  '''
+  def __init__(self, db):
+    super(PostList, self).__init__(db)
+    self._table = "posts"
+    self._order = "`date` DESC"
+  def search(self, query=None):
+    super(PostList, self).search(query=query)
+    self.db.fields("`ll_messageid`")
+    return [Post(self.db, int(post['ll_messageid'])) for post in self.db.query()]
+
+class TopicList(BaseList):
+  '''
+  Topic list object for ETI unofficial API.
+  '''
+  def __init__(self, db, tags=None):
+    super(TopicList, self).__init__(db)
+    self._table = "topics"
+    self._tags = tags
+    self._firstPost = True
+    self._order = "`lastPostTime` DESC"
+  def tags(self, tags):
+    self._tags = tags
+    return self
+  def firstPost(self, firstPost):
+    self._firstPost = bool(firstPost)
+    return self
+  def search(self, query=None):
+    super(TopicList, self).search(query=query)
+    self.db.fields("`ll_topicid`")
     if self._tags is not None:
       self.db.table("tags_topics").join("`topics` ON `ll_topicid` = `topic_id`").where(tag_id=[str(int(tag.id)) for tag in self._tags])
-
-    self.db.start(self._start).limit(self._limit)
     return [Topic(self.db, int(topic['ll_topicid'])) for topic in self.db.query()]
 
 class Topic(BaseObject):
@@ -304,6 +334,18 @@ class User(BaseObject):
     }
     self.set(userInfo)
     return self
+
+  def is_authenticated(self):
+    return not self.is_anonymous()
+
+  def is_active(self):
+    return self.is_authenticated()
+
+  def is_anonymous(self):
+    return self.id == 0
+
+  def get_id(self):
+    return unicode(self.id)
 
   @property
   def posts(self):
