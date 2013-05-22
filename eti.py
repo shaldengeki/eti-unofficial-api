@@ -113,7 +113,7 @@ class Post(BaseObject):
     """
     Fetches post info.
     """
-    dbPost = self.db.queryFirstRow("SELECT * FROM `posts` WHERE `ll_messageid` = %s LIMIT 1", [str(self.id)])
+    dbPost = self.db.table("posts").fields("*").where(ll_messageid=self.id).firstRow()
     if not dbPost:
       raise InvalidPostError(self)
     postInfo = {
@@ -159,22 +159,14 @@ class TopicList(BaseObject):
     self._limit = int(limit)
     return self
   def search(self, query=None):
-    table = "`topics`"
-    whereCriteria = []
-    queryParams = []
-    joins = []
+    self.db.table("topics").fields("`ll_topicid`")
     if self._user is not None:
-      whereCriteria.append("`userid` = %s")
-      queryParams.append(str(int(self._user.id)))
+      self.db.where(userid=str(int(self._user.id)))
     if self._tags is not None:
-      table = "`tags_topics`"
-      joins.append("INNER JOIN `topics` ON `ll_topicid` = `topic_id`")
-      whereCriteria.append("`tag_id` IN (" + ",".join(['%s'] * len(self._tags)) + ")")
-      queryParams.extend([str(int(tag.id)) for tag in self._tags])
+      self.db.table("tags_topics").join("`topics` ON `ll_topicid` = `topic_id`").where(tag_id=[str(int(tag.id)) for tag in self._tags])
 
-    queryParams.extend([self._start, self._limit])
-    topicQuery = "SELECT `ll_topicid` FROM " + table + " " + " ".join(joins) + str(" WHERE " + " && ".join(whereCriteria) if whereCriteria else " ") + " ORDER BY " + str(self._order) + " LIMIT %s, %s"
-    return [Topic(self.db, int(topic['ll_topicid'])) for topic in self.db.queryDB(topicQuery, queryParams)]
+    self.db.start(self._start).limit(self._limit)
+    return [Topic(self.db, int(topic['ll_topicid'])) for topic in self.db.query()]
 
 class Topic(BaseObject):
   '''
@@ -216,7 +208,7 @@ class Topic(BaseObject):
     """
     Fetches topic info.
     """
-    dbTopic = self.db.queryFirstRow("SELECT * FROM `topics` WHERE `ll_topicid` = %s LIMIT 1", [str(self.id)])
+    dbTopic = self.db.table("topics").where(ll_topicid=str(self.id)).firstRow()
     if not dbTopic:
       raise InvalidTopicError(self)
     topicInfo = {
@@ -234,7 +226,7 @@ class Topic(BaseObject):
     """
     Fetches topic posts.
     """
-    dbTopicPosts = self.db.queryDB("SELECT * FROM `posts` WHERE `ll_topicid` = %s ORDER BY `ll_messageid` ASC", [str(self.id)])
+    dbTopicPosts = self.db.table("posts").where(ll_topicid=str(self.id)).order("`ll_messageid` ASC").query()
     return [Post(self.db, int(dbPost['ll_messageid'])) for dbPost in dbTopicPosts]
 
   @property
@@ -242,7 +234,7 @@ class Topic(BaseObject):
     """
     Fetches topic users.
     """
-    dbTopicUsers = self.db.queryDB("SELECT `userid`, COUNT(*) AS `count` FROM `posts` WHERE `ll_topicid` = %s GROUP BY `userid` ORDER BY `count` DESC", [str(self.id)])
+    dbTopicUsers = self.db.fields("`userid`", "COUNT(*) AS `count`").table("posts").where(ll_topicid=str(self.id)).group("userid").order("`count` DESC").query()
     return [{'user': User(self.db, int(dbUser['userid'])), 'posts': int(dbUser['count'])} for dbUser in dbTopicUsers]
 
 class User(BaseObject):
@@ -290,10 +282,10 @@ class User(BaseObject):
       dbUser = defaultdict(int)
       names = [{'name': 'Human', 'date': None}]
     else:
-      dbUser = self.db.queryFirstRow("SELECT * FROM `users` WHERE `id` = %s LIMIT 1", [str(self.id)])
+      dbUser = self.db.table("users").where(id=str(self.id)).firstRow()
       if not dbUser:
         raise InvalidUserError(self)
-      dbNames = self.db.queryDB("SELECT * FROM `user_names` WHERE `user_id` = %s ORDER BY `date` DESC", [str(self.id)])
+      dbNames = self.db.table("user_names").where(user_id=str(self.id)).order("`date` DESC").query()
       names = [{'name': name['name'], 'date': int(pytz.utc.localize(name['date']).strftime('%s'))} for name in dbNames]
     userInfo = {
       'id': int(dbUser['id']),
@@ -318,5 +310,13 @@ class User(BaseObject):
     """
     Fetches user posts.
     """
-    dbUserPosts = self.db.queryDB("SELECT `ll_messageid` FROM `posts` WHERE `userid` = %s ORDER BY `date` DESC", [str(self.id)])
+    dbUserPosts = self.db.table("posts").fields("`ll_messageid`").where(userid=str(self.id)).order("`date` DESC").query()
     return [Post(self.db, int(dbPost['ll_messageid'])) for dbPost in dbUserPosts]
+
+  @property
+  def topics(self):
+    """
+    Fetches user topics.
+    """
+    dbUserTopics = self.db.table("topics").fields("`ll_topicid`").where(userid=str(self.id)).order("`lastPostTime` DESC").query()
+    return [Topic(self.db, int(dbTopic['ll_topicid'])) for dbTopic in dbUserTopics]

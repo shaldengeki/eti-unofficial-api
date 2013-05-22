@@ -75,11 +75,14 @@ def api_topic(topicid):
 @app.route('/topics/<int:topicid>/posts')
 def api_topic_posts(topicid):
   try:
-    topicObj = Topic(g.db, topicid)
-    posts = [post.load().dict() for post in topicObj.posts]
-  except InvalidTopicError:
-    posts = None
-  return jsonify_list(posts, 'posts')
+    try:
+      topicObj = Topic(g.db, topicid)
+      posts = [post.load().dict() for post in topicObj.posts]
+    except InvalidTopicError:
+      posts = None
+    return jsonify_list(posts, 'posts')
+  except Exception, e:
+    return str(e)
 
 @app.route('/topics/<int:topicid>/users')
 def api_topic_users(topicid):
@@ -114,20 +117,33 @@ def api_user(userid):
     userObj = None
   return jsonify_object(userObj)
 
+@app.route('/users/<int:userid>/posts')
+def api_user_posts(userid):
+  try:
+    try:
+      userObj = User(g.db, userid)
+      posts = [post.load().dict() for post in userObj.posts]
+    except InvalidUserError:
+      posts = None
+    resp = jsonify({'posts': posts})
+    resp.status_code = 200
+    return resp
+  except Exception, e:
+    return str(e)
 
-# @app.route('/users/<int:userid>/posts')
-# def api_topic_posts(userid):
-#   try:
-#     try:
-#       userObj = User(g.db, userid)
-#       posts = [post.load().dict() for post in userObj.posts]
-#     except InvalidUserError:
-#       posts = None
-#     resp = jsonify({'posts': posts})
-#     resp.status_code = 200
-#     return resp
-#   except Exception, e:
-#     return str(e)
+@app.route('/users/<int:userid>/topics')
+def api_user_topics(userid):
+  try:
+    try:
+      userObj = User(g.db, userid)
+      topics = [topic.load().dict() for topic in userObj.topics]
+    except InvalidUserError:
+      topics = None
+    resp = jsonify({'topics': topics})
+    resp.status_code = 200
+    return resp
+  except Exception, e:
+    return str(e)
 
 if __name__ == '__main__':
   app.run()
