@@ -187,6 +187,14 @@ class Topic(BaseObject):
     dbTopicPosts = self.db.queryDB("SELECT * FROM `posts` WHERE `ll_topicid` = %s ORDER BY `ll_messageid` ASC", [str(self.id)])
     return [Post(self.db, int(dbPost['ll_messageid'])) for dbPost in dbTopicPosts]
 
+  @property
+  def users(self):
+    """
+    Fetches topic users.
+    """
+    dbTopicUsers = self.db.queryDB("SELECT `userid`, COUNT(*) AS `count` FROM `posts` WHERE `ll_topicid` = %s GROUP BY `userid` ORDER BY `count` DESC", [str(self.id)])
+    return [{'user': User(self.db, int(dbUser['userid'])), 'posts': int(dbUser['count'])} for dbUser in dbTopicUsers]
+
 class User(BaseObject):
   '''
   User-loading object for ETI unofficial API.
@@ -234,7 +242,7 @@ class User(BaseObject):
     names = [{'name': name['name'], 'date': int(pytz.utc.localize(name['date']).strftime('%s'))} for name in dbNames]
     userInfo = {
       'id': int(dbUser['id']),
-      'names': [name for name in dbNames] if dbNames else [],
+      'names': names,
       'created': int(dbUser['created']),
       'last_active': int(dbUser['lastactive']),
       'good_tokens': int(dbUser['good_tokens']),

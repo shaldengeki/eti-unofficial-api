@@ -49,27 +49,32 @@ def api_topics():
 @app.route('/topics/<int:topicid>')
 def api_topic(topicid):
   try:
-    try:
-      topicObj = Topic(g.db, topicid).load()
-    except InvalidTopicError:
-      topicObj = None
-    return json_response(topicObj)
-  except Exception, e:
-    return str(e)
+    topicObj = Topic(g.db, topicid).load()
+  except InvalidTopicError:
+    topicObj = None
+  return json_response(topicObj)
 
 @app.route('/topics/<int:topicid>/posts')
 def api_topic_posts(topicid):
   try:
-    try:
-      topicObj = Topic(g.db, topicid)
-      posts = [post.load().dict() for post in topicObj.posts]
-    except InvalidTopicError:
-      posts = None
-    resp = jsonify({'posts': posts})
-    resp.status_code = 200
-    return resp
-  except Exception, e:
-    return str(e)
+    topicObj = Topic(g.db, topicid)
+    posts = [post.load().dict() for post in topicObj.posts]
+  except InvalidTopicError:
+    posts = None
+  resp = jsonify({'posts': posts})
+  resp.status_code = 200
+  return resp
+
+@app.route('/topics/<int:topicid>/users')
+def api_topic_users(topicid):
+  try:
+    topicObj = Topic(g.db, topicid)
+    users = [{'user': user['user'].load().dict(), 'posts': int(user['posts'])} for user in topicObj.users]
+  except InvalidTopicError:
+    users = None
+  resp = jsonify({'users': users})
+  resp.status_code = 200
+  return resp
 
 @app.route('/posts')
 def api_posts():
@@ -91,13 +96,11 @@ def api_users():
 @app.route('/users/<int:userid>')
 def api_user(userid):
   try:
-    try:
-      userObj = User(g.db, userid).load()
-    except InvalidUserError:
-      userObj = None
-    return json_response(userObj)
-  except Exception, e:
-    return str(e)
+    userObj = User(g.db, userid).load()
+  except InvalidUserError:
+    userObj = None
+  return json_response(userObj)
+
 
 # @app.route('/users/<int:userid>/posts')
 # def api_topic_posts(userid):
