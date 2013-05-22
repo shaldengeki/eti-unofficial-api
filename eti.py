@@ -303,11 +303,11 @@ class User(BaseObject):
       'good_tokens': int(dbUser['good_tokens']),
       'bad_tokens': int(dbUser['bad_tokens']),
       'tokens': int(dbUser['contrib_tokens']),
-      'signature': dbUser['signature'],
-      'quote': dbUser['quote'],
-      'email': dbUser['email'],
-      'im': dbUser['im'],
-      'picture': dbUser['picture'],
+      'signature': dbUser['signature'] if dbUser['signature'] != "NULL" else None,
+      'quote': dbUser['quote'] if dbUser['quote'] != "NULL" else None,
+      'email': dbUser['email'] if dbUser['email'] != "NULL" else None,
+      'im': dbUser['im'] if dbUser['im'] != "NULL" else None,
+      'picture': dbUser['picture'] if dbUser['picture'] != "NULL" else None,
       'status': int(dbUser['status']),
     }
     self.set(userInfo)
