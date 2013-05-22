@@ -6,6 +6,7 @@
   Released under WTFPL <http://www.wtfpl.net/txt/copying>
 """
 
+import collections
 import json
 import pytz
 
@@ -68,7 +69,7 @@ class BaseObject(object):
     for k,v in self.__dict__.iteritems():
       if isinstance(v, BaseObject):
         v = v.dict()
-      elif k == 'db':
+      elif k == 'db' or k.startswith('_'):
         continue
       resultDict[k] = v
     return resultDict
@@ -118,13 +119,62 @@ class Post(BaseObject):
     postInfo = {
       'id': int(dbPost['ll_messageid']),
       'topic': Topic(self.db, int(dbPost['ll_topicid'])),
-      'user': int(dbPost['userid']),
+      'user': User(self.db, int(dbPost['userid'])),
       'date': int(dbPost['date']),
       'html': dbPost['messagetext'],
       'sig': dbPost['sig'] if dbPost['sig'] != 'False' else None
     }
     self.set(postInfo)
     return self
+
+class TopicList(BaseObject):
+  '''
+  Topic list object for ETI unofficial API.
+  '''
+  def __init__(self, db, tags=None):
+    self.db = db
+    self._tags = tags
+    self._user = None
+    self._firstPost = True
+    self._order = "`lastPostTime` DESC"
+    self._start = 0
+    self._limit = 50
+    self.topics = []
+  def tags(self, tags):
+    self._tags = tags
+    return self
+  def user(self, user):
+    self._user = user
+    return self
+  def firstPost(self, firstPost):
+    self._firstPost = bool(firstPost)
+    return self
+  def order(self, order):
+    self._order = order
+    return self
+  def start(self, start):
+    self._start = int(start)
+    return self
+  def limit(self, limit):
+    self._limit = int(limit)
+    return self
+  def search(self, query=None):
+    table = "`topics`"
+    whereCriteria = []
+    queryParams = []
+    joins = []
+    if self._user is not None:
+      whereCriteria.append("`userid` = %s")
+      queryParams.append(str(int(self._user.id)))
+    if self._tags is not None:
+      table = "`tags_topics`"
+      joins.append("INNER JOIN `topics` ON `ll_topicid` = `topic_id`")
+      whereCriteria.append("`tag_id` IN (" + ",".join(['%s'] * len(self._tags)) + ")")
+      queryParams.extend([str(int(tag.id)) for tag in self._tags])
+
+    queryParams.extend([self._start, self._limit])
+    topicQuery = "SELECT `ll_topicid` FROM " + table + " " + " ".join(joins) + str(" WHERE " + " && ".join(whereCriteria) if whereCriteria else " ") + " ORDER BY " + str(self._order) + " LIMIT %s, %s"
+    return [Topic(self.db, int(topic['ll_topicid'])) for topic in self.db.queryDB(topicQuery, queryParams)]
 
 class Topic(BaseObject):
   '''
@@ -174,7 +224,7 @@ class Topic(BaseObject):
       'post_count': int(dbTopic['postCount']),
       'last_post_time': int(dbTopic['lastPostTime']),
       'title': dbTopic['title'],
-      'user_id': int(dbTopic['userid'])
+      'user': User(self.db, int(dbTopic['userid']))
     }
     self.set(topicInfo)
     return self
@@ -202,8 +252,8 @@ class User(BaseObject):
   def __init__(self, db, id):
     self.db = db
     self.id = id
-    if not isinstance(id, int) or int(id) < 1:
-      raise InvalidTopicError(self)
+    if not isinstance(id, int) or int(id) < 0:
+      raise InvalidUserError(self)
 
   def __str__(self):
     return str(self.dict())
@@ -233,13 +283,18 @@ class User(BaseObject):
 
   def load(self):
     """
-    Fetches topic info.
+    Fetches user info.
     """
-    dbUser = self.db.queryFirstRow("SELECT * FROM `users` WHERE `id` = %s LIMIT 1", [str(self.id)])
-    if not dbUser:
-      raise InvalidUserError(self)
-    dbNames = self.db.queryDB("SELECT * FROM `user_names` WHERE `user_id` = %s ORDER BY `date` DESC", [str(self.id)])
-    names = [{'name': name['name'], 'date': int(pytz.utc.localize(name['date']).strftime('%s'))} for name in dbNames]
+    if self.id == 0:
+      # Anonymous user.
+      dbUser = defaultdict(int)
+      names = [{'name': 'Human', 'date': None}]
+    else:
+      dbUser = self.db.queryFirstRow("SELECT * FROM `users` WHERE `id` = %s LIMIT 1", [str(self.id)])
+      if not dbUser:
+        raise InvalidUserError(self)
+      dbNames = self.db.queryDB("SELECT * FROM `user_names` WHERE `user_id` = %s ORDER BY `date` DESC", [str(self.id)])
+      names = [{'name': name['name'], 'date': int(pytz.utc.localize(name['date']).strftime('%s'))} for name in dbNames]
     userInfo = {
       'id': int(dbUser['id']),
       'names': names,

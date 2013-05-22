@@ -11,12 +11,24 @@ class DbConn(object):
     self.username = username
     self.password = password
     self.database = database
-    self.conn = None
-    self.connect()
-    self.cursor = self.conn.cursor()
+    self._conn = self._cursor = None
+
+  @property
+  def conn(self):
+    if self._conn is None:
+      self.connect()
+    return self._conn
+
+  @property
+  def cursor(self):
+    if self._cursor is None:
+      self._cursor = self.conn.cursor()
+    return self._cursor
+
   def connect(self):
     try:
-      self.conn = MySQLdb.connect('localhost', self.username, self.password, self.database, charset="utf8", use_unicode=True, cursorclass=MySQLdb.cursors.SSDictCursor)
+      self._conn = MySQLdb.connect('localhost', self.username, self.password, self.database, charset="utf8", use_unicode=True, cursorclass=MySQLdb.cursors.SSDictCursor)
+      self._cursor = None
     except MySQLdb.Error, e:
       print "Error connecting to MySQL database %d: %s to database: %s" % (e.args[0],e.args[1],self.database)
       raise
@@ -33,9 +45,8 @@ class DbConn(object):
       if not self.connect():
         print "Unable to reconnect to MySQL."
         raise
-      cursor = self.conn.cursor()
+      cursor = self.cursor
       cursor.execute(query, params)
-      self.cursor = cursor
     return cursor
   def queryList(self, query, params=[], valField=None, newCursor=False):
     if valField is None:
@@ -65,7 +76,7 @@ class DbConn(object):
     firstRow = queryCursor.fetchone()
     queryCursor.close()
     if not newCursor:
-      self.cursor = self.conn.cursor()
+      self._cursor = None
     return firstRow
   def queryFirstValue(self, query, params=[], newCursor=False):
     firstRow = self.queryFirstRow(query, params, newCursor=newCursor)
@@ -75,3 +86,4 @@ class DbConn(object):
     return firstRow[rowKeys[0]]
   def close(self):
     self.conn.close()
+    self._conn = None

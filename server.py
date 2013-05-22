@@ -8,7 +8,7 @@
 
 from flask import Flask, request, jsonify, session, g, redirect, url_for, abort, render_template, flash
 import DbConn
-from eti import InvalidTopicError, InvalidPostError, InvalidUserError, Topic, Post, User
+from eti import InvalidTopicError, InvalidPostError, InvalidUserError, Topic, Post, User, TopicList
 
 app = Flask(__name__)
 
@@ -17,7 +17,12 @@ MYSQL_USERNAME,MYSQL_PASSWORD,MYSQL_DB = open(DB_CREDENTIALS_FILE, 'r').read().s
 
 app.config.from_object(__name__)
 
-def json_response(outputObj):
+def jsonify_list(outputList, key):
+  resp = jsonify({key: outputList})
+  resp.status_code = 200
+  return resp
+
+def jsonify_object(outputObj):
   """
   Takes an object (or None) and returns a proper json response object.
   """
@@ -44,7 +49,20 @@ def api_root():
 
 @app.route('/topics')
 def api_topics():
-  return 'List of ' + url_for('api_topics')
+  topicList = TopicList(g.db)
+  if 'user' in request.args:
+    filterUser = User(g.db, int(request.args['user']))
+    topicList.user(filterUser)
+  if 'tag' in request.args:
+    tagNames = request.args.getlist('tag')
+    # TODO
+  if 'start' in request.args:
+    topicList.start(int(request.args['start']))
+  if 'limit' in request.args:
+    topicLimit = 1000 if int(request.args['limit']) > 1000 or int(request.args['limit']) < 1 else int(request.args['limit'])
+    topicList.limit(topicLimit)
+  searchTopics = [topic.load().dict() for topic in topicList.search()]
+  return jsonify_list(searchTopics, 'topics')
 
 @app.route('/topics/<int:topicid>')
 def api_topic(topicid):
@@ -52,7 +70,7 @@ def api_topic(topicid):
     topicObj = Topic(g.db, topicid).load()
   except InvalidTopicError:
     topicObj = None
-  return json_response(topicObj)
+  return jsonify_object(topicObj)
 
 @app.route('/topics/<int:topicid>/posts')
 def api_topic_posts(topicid):
@@ -61,20 +79,15 @@ def api_topic_posts(topicid):
     posts = [post.load().dict() for post in topicObj.posts]
   except InvalidTopicError:
     posts = None
-  resp = jsonify({'posts': posts})
-  resp.status_code = 200
-  return resp
+  return jsonify_list(posts, 'posts')
 
 @app.route('/topics/<int:topicid>/users')
 def api_topic_users(topicid):
   try:
-    topicObj = Topic(g.db, topicid)
-    users = [{'user': user['user'].load().dict(), 'posts': int(user['posts'])} for user in topicObj.users]
+    users = [{'user': user['user'].load().dict(), 'posts': int(user['posts'])} for user in Topic(g.db, topicid).users]
   except InvalidTopicError:
     users = None
-  resp = jsonify({'users': users})
-  resp.status_code = 200
-  return resp
+  return jsonify_list(users, 'users')
 
 @app.route('/posts')
 def api_posts():
@@ -87,7 +100,7 @@ def api_post(postid):
     postObj.topic = postObj.topic.dict()
   except InvalidPostError:
     postObj = None
-  return json_response(postObj)
+  return jsonify_object(postObj)
 
 @app.route('/users')
 def api_users():
@@ -99,7 +112,7 @@ def api_user(userid):
     userObj = User(g.db, userid).load()
   except InvalidUserError:
     userObj = None
-  return json_response(userObj)
+  return jsonify_object(userObj)
 
 
 # @app.route('/users/<int:userid>/posts')
