@@ -308,7 +308,7 @@ class User(BaseObject):
     """
     if self.id == 0:
       # Anonymous user.
-      dbUser = defaultdict(int)
+      dbUser = collections.defaultdict(int)
       names = [{'name': 'Human', 'date': None}]
     else:
       dbUser = self.db.table("users").where(id=str(self.id)).firstRow()

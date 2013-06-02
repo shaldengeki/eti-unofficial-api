@@ -81,7 +81,7 @@ class DbConn(object):
     return self
 
   def group(self, field):
-    self._group = field if instanceof(field, list) else [field]
+    self._group = field if isinstance(field, list) else [field]
     return self
 
   def order(self, order):
