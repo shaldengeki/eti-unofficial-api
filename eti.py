@@ -57,10 +57,23 @@ class MalformedPostError(InvalidPostError):
         "Text: " + unicode(self.text)
       ])
 
+class InvalidTagError(Exception):
+  def __init__(self, tag):
+    super(InvalidTagError, self).__init__()
+    self.tag = tag
+  def __str__(self):
+    return "\n".join([
+      super(InvalidTagError, self).__str__(),
+      "Tag Title: " + unicode(self.tag.title)
+      ])
+
 class BaseObject(object):
   '''
   Base object with common features.
   '''
+  def __str__(self):
+    return str(self.dict())
+
   def dict(self):
     """
     Filters out all non-serializable attributes of this object.
@@ -74,6 +87,15 @@ class BaseObject(object):
       resultDict[k] = v
     return resultDict
 
+  def set(self, attrDict):
+    """
+    Sets attributes of this post object with keys found in dict.
+    """
+    for key in attrDict:
+      setattr(self, key, attrDict[key])
+    return self
+
+
 class Post(BaseObject):
   '''
   Post-loading object for ETI unofficial API.
@@ -85,9 +107,7 @@ class Post(BaseObject):
       raise InvalidPostError(self)
     else:
       self.id = int(self.id)
-
-  def __str__(self):
-    return str(self.dict())
+    self._page = None
 
   def __contains__(self, searchString):
     return searchString in self.html
@@ -100,14 +120,6 @@ class Post(BaseObject):
 
   def __eq__(self, post):
     return self.id == post.id
-
-  def set(self, attrDict):
-    """
-    Sets attributes of this post object with keys found in dict.
-    """
-    for key in attrDict:
-      setattr(self, key, attrDict[key])
-    return self
 
   def load(self):
     """
@@ -125,6 +137,13 @@ class Post(BaseObject):
       'sig': dbPost['sig'] if dbPost['sig'] != 'False' else None
     }
     self.set(postInfo)
+
+    # this needs to be after the topic is set.
+    # get number of posts in this topic up to this post.
+    numPosts = int(self.db.table("posts").fields("COUNT(*)").where("ll_messageid < " + str(int(self.id)), ll_topicid=str(self.topic.id)).firstValue())
+    self.set({
+      'page': int(numPosts * 1.0 / 50) + 1
+      })
     return self
 
 class BaseList(BaseObject):
@@ -196,6 +215,8 @@ class TopicList(BaseList):
     self.db.fields("`ll_topicid`")
     if self._tags is not None:
       self.db.table("tags_topics").join("`topics` ON `ll_topicid` = `topic_id`").where(tag_id=[str(int(tag.id)) for tag in self._tags])
+    if query is not None:
+      self.db.match(['`topics`.`title`'], query)
     return [Topic(self.db, int(topic['ll_topicid'])) for topic in self.db.query()]
 
 class Topic(BaseObject):
@@ -207,9 +228,6 @@ class Topic(BaseObject):
     self.id = id
     if not isinstance(id, int) or int(id) < 1:
       raise InvalidTopicError(self)
-
-  def __str__(self):
-    return str(self.dict())
 
   def __len__(self):
     return len(self.posts)
@@ -225,14 +243,6 @@ class Topic(BaseObject):
 
   def __eq__(self, topic):
     return self.id == topic.id
-
-  def set(self, attrDict):
-    """
-    Sets attributes of this topic object with keys found in dict.
-    """
-    for key in attrDict:
-      setattr(self, key, attrDict[key])
-    return self
 
   def load(self):
     """
@@ -277,9 +287,6 @@ class User(BaseObject):
     if not isinstance(id, int) or int(id) < 0:
       raise InvalidUserError(self)
 
-  def __str__(self):
-    return str(self.dict())
-
   def __len__(self):
     return len(self.posts)
 
@@ -294,14 +301,6 @@ class User(BaseObject):
 
   def __eq__(self, topic):
     return self.id == topic.id
-
-  def set(self, attrDict):
-    """
-    Sets attributes of this topic object with keys found in dict.
-    """
-    for key in attrDict:
-      setattr(self, key, attrDict[key])
-    return self
 
   def load(self):
     """
@@ -362,3 +361,75 @@ class User(BaseObject):
     """
     dbUserTopics = self.db.table("topics").fields("`ll_topicid`").where(userid=str(self.id)).order("`lastPostTime` DESC").query()
     return [Topic(self.db, int(dbTopic['ll_topicid'])) for dbTopic in dbUserTopics]
+
+class Tag(BaseObject):
+  '''
+  Tag-loading object for ETI unofficial API.
+  '''
+  def __init__(self, db, title):
+    self.db = db
+    self.title = title
+    if not isinstance(title, basestring):
+      raise InvalidTagError(self)
+    self._id = None
+
+  def __contains__(self, topic):
+    return topic.id in self._topicIDs
+
+  def __index__(self):
+    return hash(self.title)
+
+  def __hash__(self):
+    return hash(self.title)
+
+  def __eq__(self, tag):
+    return self.title == tag.title
+
+  def load(self):
+    """
+    Fetches topic info.
+    """
+    dbTag = self.db.table("tags").where(name=str(self.title)).firstRow()
+    if not dbTag:
+      raise InvalidTagError(self)
+    tagID = self.id
+    dbDependencies = self.db.table("tags_dependent").fields("name").join("`tags` ON `tags_dependent`.`parent_tag_id` = `tags`.`id`").where(child_tag_id=str(tagID)).list("name")
+    dbDependencies = dbDependencies if dbDependencies else []
+    dbForbiddens = self.db.table("tags_forbidden").fields("name").join("`tags` ON `tags_forbidden`.`forbidden_tag_id` = `tags`.`id`").where(tag_id=str(tagID)).list("name")
+    dbForbiddens = dbForbiddens if dbForbiddens else []
+    dbRelated = self.db.table("tags_related").fields("name").join("`tags` ON `tags_related`.`parent_tag_id` = `tags`.`id`").where(child_tag_id=str(tagID)).list("name")
+    dbRelated = dbRelated if dbRelated else []
+
+    tagInfo = {
+      'title': dbTag['name'],
+      'description': dbTag['description'],
+      'access': int(dbTag['access']),
+      'participation': int(dbTag['participation']),
+      'permanent': int(dbTag['permanent']),
+      'inceptive': int(dbTag['inceptive']),
+      'dependent': dbDependencies,
+      'forbidden': dbForbiddens,
+      'related': dbRelated
+    }
+    self.set(tagInfo)
+    return self
+
+  @property
+  def id(self):
+    """
+    Fetches tag ID for this title.
+    """
+    if self._id is None:
+      tagID = self.db.table("tags").fields("id").where(name=str(self.title)).firstValue()
+      if not tagID:
+        raise InvalidTagError(self)
+      self._id = int(tagID)
+    return self._id
+
+  @property
+  def topics(self):
+    """
+    Fetches tag topics.
+    """
+    dbTagTopics = self.db.table("tags_topics").fields("topic_id").join("topics ON topics.ll_topicid = tags_topics.topic_id").where(tag_id=str(self.id)).order("topics.lastPostTime DESC").list("topic_id")
+    return [Topic(self.db, int(topicID)) for topicID in dbTagTopics]

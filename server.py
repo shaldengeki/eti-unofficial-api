@@ -14,7 +14,7 @@ import urllib
 import sys, os
 
 import DbConn
-from eti import InvalidTopicError, InvalidPostError, InvalidUserError, Topic, Post, User, TopicList, PostList
+from eti import InvalidTopicError, InvalidPostError, InvalidUserError, InvalidTagError, Topic, Post, User, TopicList, PostList, Tag
 
 # database, secret token config
 app = Flask(__name__)
@@ -60,11 +60,12 @@ def jsonify_object(outputObj):
   """
   Takes an object (or None) and returns a proper json response object.
   """
-  outputObj = outputObj.dict()
   status = 200
   if outputObj is None:
     status = 404
     outputObj = {}
+  else:
+    outputObj = outputObj.dict()
   resp = jsonify(outputObj)
   resp.status_code = status
   return resp
@@ -99,6 +100,7 @@ def api_root():
 @app.route('/topics')
 def api_topics():
   topicList = TopicList(g.db)
+  query = request.args['query'] if 'query' in request.args else None
   if 'user' in request.args:
     try:
       filterUser = User(g.db, int(request.args['user']))
@@ -114,7 +116,7 @@ def api_topics():
   if 'limit' in request.args:
     topicLimit = 1000 if int(request.args['limit']) > 1000 or int(request.args['limit']) < 1 else int(request.args['limit'])
     topicList.limit(topicLimit)
-  searchTopics = [topic.load().dict() for topic in topicList.search()]
+  searchTopics = [topic.load().dict() for topic in topicList.search(query=query)]
   return jsonify_list(searchTopics, 'topics')
 
 @app.route('/topics/<int:topicid>')
@@ -211,6 +213,7 @@ def api_user_topics(userid):
   except InvalidUserError:
     return not_found()
   topicList = TopicList(g.db).user(userObj)
+  query = request.args['query'] if 'query' in request.args else None
   if 'tag' in request.args:
     tagNames = request.args.getlist('tag')
     # TODO
@@ -220,7 +223,36 @@ def api_user_topics(userid):
   if 'start' in request.args:
     requestedStart = int(request.args['start'])
     topicList.start(0 if requestedStart < 0 else requestedStart)
-  searchTopics = [post.load().dict() for post in topicList.search()]
+  searchTopics = [post.load().dict() for post in topicList.search(query=query)]
+  return jsonify_list(searchTopics, 'topics')
+
+@app.route('/tags')
+def api_tags():
+  return 'List of ' + url_for('api_tags')
+
+@app.route('/tags/<title>')
+def api_tag(title):
+  try:
+    tagObj = Tag(g.db, title).load()
+  except InvalidTagError:
+    tagObj = None
+  return jsonify_object(tagObj)
+
+@app.route('/tags/<title>/topics')
+def api_tag_topics(title):
+  try:
+    tagObj = Tag(g.db, title).load()
+  except InvalidTagError:
+    return not_found()
+  topicList = TopicList(g.db).tags([tagObj])
+  query = request.args['query'] if 'query' in request.args else None
+  if 'limit' in request.args:
+    requestedLimit = int(request.args['limit'])
+    topicList.limit(1000 if requestedLimit > 1000 or requestedLimit < 1 else requestedLimit)
+  if 'start' in request.args:
+    requestedStart = int(request.args['start'])
+    topicList.start(0 if requestedStart < 0 else requestedStart)
+  searchTopics = [post.load().dict() for post in topicList.search(query=query)]
   return jsonify_list(searchTopics, 'topics')
 
 @app.route('/login')

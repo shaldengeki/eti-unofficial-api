@@ -60,7 +60,9 @@ class DbConn(object):
     self._joins.append(" ".join([joinType, "JOIN", join]))
     return self
 
-  def where(self, **kwargs):
+  def where(self, *args, **kwargs):
+    for entry in args:
+      self._wheres.append(entry)
     for field, value in kwargs.items():
       if isinstance(value, (basestring, int, float, long, bool)):
         # if scalar, assume it's a direct equals.
@@ -70,6 +72,12 @@ class DbConn(object):
         # if not scalar, assume it's an IN query.
         self._wheres.append("".join(["`", field, "` IN (", ",".join(["%s"] * len(value)), ")"]))
         self._params.extend(value)
+    return self
+
+  def match(self, fields, query):
+    # WHERE MATCH(fields) AGAINST(query IN BOOLEAN MODE)
+    self._wheres.append("MATCH(" + ",".join(fields) + ") AGAINST(%s IN BOOLEAN MODE)")
+    self._params.extend([query])
     return self
 
   def group(self, field):
@@ -108,8 +116,8 @@ class DbConn(object):
     self.clearParams()
     return cursor
 
-  def list(self, valField=None, newCursor=False):
-    if valField is None:
+  def list(self, valField, newCursor=False):
+    if not isinstance(valField, basestring):
       return False
     queryCursor = self.query(newCursor=newCursor)
     if not queryCursor:
