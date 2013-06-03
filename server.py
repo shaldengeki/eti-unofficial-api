@@ -99,28 +99,25 @@ def api_root():
 
 @app.route('/topics')
 def api_topics():
-  try:
-    topicList = TopicList(g.db)
-    query = request.args['query'] if 'query' in request.args else None
-    if 'user' in request.args:
-      try:
-        filterUser = User(g.db, int(request.args['user']))
-      except InvalidUserError, e:
-        return not_found()
-      topicList.user(filterUser)
-    if 'tag' in request.args:
-      tagNames = request.args.getlist('tag')
-      # TODO
-    if 'start' in request.args:
-      requestedStart = int(request.args['start'])
-      topicList.start(0 if requestedStart < 0 else requestedStart)
-    if 'limit' in request.args:
-      topicLimit = 1000 if int(request.args['limit']) > 1000 or int(request.args['limit']) < 1 else int(request.args['limit'])
-      topicList.limit(topicLimit)
-    searchTopics = [topic.dict() for topic in topicList.search(query=query)]
-    return jsonify_list(searchTopics, 'topics')
-  except Exception as e:
-    return str(e)
+  topicList = TopicList(g.db)
+  query = request.args['query'] if 'query' in request.args else None
+  if 'user' in request.args:
+    try:
+      filterUser = User(g.db, int(request.args['user']))
+    except InvalidUserError, e:
+      return not_found()
+    topicList.user(filterUser)
+  if 'tag' in request.args:
+    tagNames = request.args.getlist('tag')
+    # TODO
+  if 'start' in request.args:
+    requestedStart = int(request.args['start'])
+    topicList.start(0 if requestedStart < 0 else requestedStart)
+  if 'limit' in request.args:
+    topicLimit = 1000 if int(request.args['limit']) > 1000 or int(request.args['limit']) < 1 else int(request.args['limit'])
+    topicList.limit(topicLimit)
+  searchTopics = [topic.dict() for topic in topicList.search(query=query)]
+  return jsonify_list(searchTopics, 'topics')
 
 @app.route('/topics/<int:topicid>')
 def api_topic(topicid):
@@ -236,13 +233,10 @@ def api_tags():
 @app.route('/tags/<title>')
 def api_tag(title):
   try:
-    try:
-      tagObj = Tag(g.db, title).load()
-    except InvalidTagError:
-      tagObj = None
-    return jsonify_object(tagObj)
-  except Exception as e:
-    return str(e)
+    tagObj = Tag(g.db, title).load()
+  except InvalidTagError:
+    tagObj = None
+  return jsonify_object(tagObj)
 
 @app.route('/tags/<title>/topics')
 def api_tag_topics(title):
