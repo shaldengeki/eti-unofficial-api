@@ -10,6 +10,24 @@ import collections
 import json
 import pytz
 
+def recursiveSerialize(item):
+  resultDict = {}
+  try:
+    items = item.__dict__.iteritems()
+  except AttributeError:
+    items = item.iteritems()
+  for k,v in items:
+    if isinstance(v, BaseObject):
+      v = v.dict()
+    elif k == 'db' or k.startswith('_'):
+      continue
+    elif isinstance(v, list):
+      v = [recursiveSerialize(x) for x in v]
+    elif isinstance(v, dict):
+      v = recursiveSerialize(v)
+    resultDict[k] = v
+  return resultDict
+
 class InvalidTopicError(Exception):
   def __init__(self, topic):
     super(InvalidTopicError, self).__init__()
@@ -64,7 +82,7 @@ class InvalidTagError(Exception):
   def __str__(self):
     return "\n".join([
       super(InvalidTagError, self).__str__(),
-      "Tag Title: " + unicode(self.tag.title)
+      "Tag Title: " + unicode(self.tag.name)
       ])
 
 class BaseObject(object):
@@ -78,14 +96,7 @@ class BaseObject(object):
     """
     Filters out all non-serializable attributes of this object.
     """
-    resultDict = {}
-    for k,v in self.__dict__.iteritems():
-      if isinstance(v, BaseObject):
-        v = v.dict()
-      elif k == 'db' or k.startswith('_'):
-        continue
-      resultDict[k] = v
-    return resultDict
+    return recursiveSerialize(self)
 
   def set(self, attrDict):
     """
@@ -107,7 +118,6 @@ class Post(BaseObject):
       raise InvalidPostError(self)
     else:
       self.id = int(self.id)
-    self._page = None
 
   def __contains__(self, searchString):
     return searchString in self.html
@@ -139,12 +149,18 @@ class Post(BaseObject):
     self.set(postInfo)
 
     # this needs to be after the topic is set.
+    foo = self.getPage()
+    return self
+  def getPage(self):
+    if not hasattr(self, 'topic'):
+      self.load()
     # get number of posts in this topic up to this post.
     numPosts = int(self.db.table("posts").fields("COUNT(*)").where("ll_messageid < " + str(int(self.id)), ll_topicid=str(self.topic.id)).firstValue())
+    pageNum = int(numPosts * 1.0 / 50) + 1
     self.set({
-      'page': int(numPosts * 1.0 / 50) + 1
-      })
-    return self
+      'page': pageNum
+    })
+    return pageNum
 
 class BaseList(BaseObject):
   '''
@@ -191,8 +207,23 @@ class PostList(BaseList):
     self._order = "`date` DESC"
   def search(self, query=None):
     super(PostList, self).search(query=query)
-    self.db.fields("`ll_messageid`")
-    return [Post(self.db, int(post['ll_messageid'])) for post in self.db.query()]
+    self.db.fields("ll_messageid AS id", "ll_topicid as topic_id", "userid as user_id", "date", "messagetext as html", "sig")
+    resultPosts = []
+    for post in self.db.query():
+      postInfo = {
+        'id': int(post['id']),
+        'topic': Topic(self.db, int(post['topic_id'])),
+        'user': User(self.db, int(post['user_id'])),
+        'date': int(post['date']),
+        'html': post['html'],
+        'sig': post['sig'] if post['sig'] != 'False' else None
+      }
+      newPost = Post(self.db, postInfo['id'])
+      resultPosts.append(newPost.set(postInfo))
+
+    # needs to be outside of the query() loop since getPage() pulls from the db
+    [post.getPage() for post in resultPosts]
+    return resultPosts
 
 class TopicList(BaseList):
   '''
@@ -212,12 +243,24 @@ class TopicList(BaseList):
     return self
   def search(self, query=None):
     super(TopicList, self).search(query=query)
-    self.db.fields("`ll_topicid`")
+    self.db.fields('ll_topicid AS id', 'postCount as post_count', 'lastPostTime as last_post_time', 'title', 'userid as user_id')
     if self._tags is not None:
       self.db.table("tags_topics").join("`topics` ON `ll_topicid` = `topic_id`").where(tag_id=[str(int(tag.id)) for tag in self._tags])
     if query is not None:
       self.db.match(['`topics`.`title`'], query)
-    return [Topic(self.db, int(topic['ll_topicid'])) for topic in self.db.query()]
+    resultTopics = []
+    for topic in self.db.query():
+      topicInfo = {
+        'id': int(topic['id']),
+        'post_count': int(topic['post_count']),
+        'last_post_time': int(topic['last_post_time']),
+        'title': topic['title'],
+        'user': User(self.db, int(topic['user_id']))
+      }
+      newTopic = Topic(self.db, topicInfo['id'])
+      resultTopics.append(newTopic.set(topicInfo))
+    [topic.set({'tags': topic.getTags()}) for topic in resultTopics]
+    return resultTopics
 
 class Topic(BaseObject):
   '''
@@ -256,10 +299,18 @@ class Topic(BaseObject):
       'post_count': int(dbTopic['postCount']),
       'last_post_time': int(dbTopic['lastPostTime']),
       'title': dbTopic['title'],
-      'user': User(self.db, int(dbTopic['userid']))
+      'user': User(self.db, int(dbTopic['userid'])),
+      'tags': self.getTags()
     }
     self.set(topicInfo)
     return self
+
+  def getTags(self):
+    """
+    Fetches topic tags.
+    """
+    dbTopicTags = self.db.table("tags_topics").fields("name").join("tags ON tags.id = tags_topics.tag_id").where(topic_id=str(self.id)).order("name ASC").query()
+    return [Tag(self.db, topic['name']) for topic in dbTopicTags]
 
   @property
   def posts(self):
@@ -368,7 +419,7 @@ class Tag(BaseObject):
   '''
   def __init__(self, db, title):
     self.db = db
-    self.title = title
+    self.name = title
     if not isinstance(title, basestring):
       raise InvalidTagError(self)
     self._id = None
@@ -377,19 +428,19 @@ class Tag(BaseObject):
     return topic.id in self._topicIDs
 
   def __index__(self):
-    return hash(self.title)
+    return hash(self.name)
 
   def __hash__(self):
-    return hash(self.title)
+    return hash(self.name)
 
   def __eq__(self, tag):
-    return self.title == tag.title
+    return self.name == tag.name
 
   def load(self):
     """
     Fetches topic info.
     """
-    dbTag = self.db.table("tags").where(name=str(self.title)).firstRow()
+    dbTag = self.db.table("tags").where(name=str(self.name)).firstRow()
     if not dbTag:
       raise InvalidTagError(self)
     tagID = self.id
@@ -401,7 +452,7 @@ class Tag(BaseObject):
     dbRelated = dbRelated if dbRelated else []
 
     tagInfo = {
-      'title': dbTag['name'],
+      'name': dbTag['name'],
       'description': dbTag['description'],
       'access': int(dbTag['access']),
       'participation': int(dbTag['participation']),
@@ -409,10 +460,24 @@ class Tag(BaseObject):
       'inceptive': int(dbTag['inceptive']),
       'dependent': dbDependencies,
       'forbidden': dbForbiddens,
-      'related': dbRelated
+      'related': dbRelated,
+      'staff': self.getStaff()
     }
     self.set(tagInfo)
     return self
+
+  def getStaff(self):
+    foo = self.id
+    dbTagStaff = self.db.table("tags_users").fields("username", "user_id", "role").join("users ON user_id = id").where(tag_id=self.id).order("role DESC, username ASC")
+    resultStaff = []
+    for user in dbTagStaff.query():
+      userInfo = {
+        'id': int(user['user_id']),
+        'name': user['username']
+      }
+      newUser = User(self.db, userInfo['id'])
+      resultStaff.append({"role": int(user['role']), "user": newUser.set(userInfo)})
+    return resultStaff
 
   @property
   def id(self):
@@ -420,7 +485,7 @@ class Tag(BaseObject):
     Fetches tag ID for this title.
     """
     if self._id is None:
-      tagID = self.db.table("tags").fields("id").where(name=str(self.title)).firstValue()
+      tagID = self.db.table("tags").fields("id").where(name=str(self.name)).firstValue()
       if not tagID:
         raise InvalidTagError(self)
       self._id = int(tagID)
