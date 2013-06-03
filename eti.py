@@ -243,19 +243,20 @@ class TopicList(BaseList):
     return self
   def search(self, query=None):
     super(TopicList, self).search(query=query)
-    self.db.fields('ll_topicid AS id', 'postCount as post_count', 'lastPostTime as last_post_time', 'title', 'userid as user_id')
+    self.db.fields('ll_topicid AS id', 'postCount as post_count', 'lastPostTime as last_post_time', 'title', 'userid as user_id', 'username').join('users ON id = userid')
     if self._tags is not None:
       self.db.table("tags_topics").join("`topics` ON `ll_topicid` = `topic_id`").where(tag_id=[str(int(tag.id)) for tag in self._tags])
     if query is not None:
       self.db.match(['`topics`.`title`'], query)
     resultTopics = []
     for topic in self.db.query():
+      newUser = User(self.db, int(topic['user_id']))
       topicInfo = {
         'id': int(topic['id']),
         'post_count': int(topic['post_count']),
         'last_post_time': int(topic['last_post_time']),
         'title': topic['title'],
-        'user': User(self.db, int(topic['user_id']))
+        'user': newUser.set({'name': topic['username']})
       }
       newTopic = Topic(self.db, topicInfo['id'])
       resultTopics.append(newTopic.set(topicInfo))
