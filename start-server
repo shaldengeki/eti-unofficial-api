@@ -1,0 +1,3 @@
+#!/bin/bash
+sudo killall -9 gunicorn
+sudo gunicorn server:app --bind unix:/tmp/gunicorn_flask.sock -w 4 -D

@@ -26,6 +26,19 @@ class DbConn(object):
       self._cursor = self.conn.cursor()
     return self._cursor
 
+  def resetCursor(self, cursor=None):
+    if cursor is None:
+      try:
+        self._cursor.close()
+        self._cursor = None
+      except AttributeError:
+        # cursor hasn't been set.
+        pass
+    else:
+      cursor.close()
+      cursor = self.conn.cursor()
+    return self
+
   def clearParams(self):
     """
     Clears query parameters.
@@ -96,23 +109,25 @@ class DbConn(object):
     self._limit = int(limit)
     return self
 
-  def query(self, newCursor=False):
+  def queryString(self):
     fields = ["*"] if not self._fields else self._fields
-    searchQuery = " ".join(["SELECT", ",".join(fields), "FROM", self._table, " ".join(self._joins), " ".join(["WHERE", "&&".join(self._wheres)]) if self._wheres else "", " ".join(["GROUP BY", ",".join(self._group)]) if self._group else "", " ".join(["ORDER BY", str(self._order)]) if self._order else "", "LIMIT %s, %s"])
+    return " ".join(["SELECT", ",".join(fields), "FROM", self._table, " ".join(self._joins), " ".join(["WHERE", "&&".join(self._wheres)]) if self._wheres else "", " ".join(["GROUP BY", ",".join(self._group)]) if self._group else "", " ".join(["ORDER BY", str(self._order)]) if self._order else "", "LIMIT %s, %s"])
+
+  def query(self, newCursor=False):
     self._params.extend([int(self._start), int(self._limit)])
     try:
       if newCursor:
         cursor = self.conn.cursor()
       else:
         cursor = self.cursor
-      cursor.execute(searchQuery, self._params)
+      cursor.execute(self.queryString(), self._params)
     except (AttributeError, MySQLdb.OperationalError):
       # lost connection. reconnect and re-query.
       if not self.connect():
         print "Unable to reconnect to MySQL."
         raise
       cursor = self.cursor
-      cursor.execute(searchQuery, self._params)
+      cursor.execute(self.queryString(), self._params)
     self.clearParams()
     return cursor
 
@@ -122,7 +137,12 @@ class DbConn(object):
     queryCursor = self.query(newCursor=newCursor)
     if not queryCursor:
       return False
-    return [result[valField] for result in queryCursor]
+    resultList = [result[valField] for result in queryCursor]
+    if newCursor:
+      self.resetCursor(cursor=queryCursor)
+    else:
+      self.resetCursor()
+    return resultList
 
   def dict(self, keyField=None, valField=None, newCursor=False):
     if valField is None:
@@ -137,6 +157,10 @@ class DbConn(object):
     while row is not None:
       queryResults[row[keyField]] = row[valField]
       row = queryCursor.fetchone()
+    if newCursor:
+      self.resetCursor(cursor=queryCursor)
+    else:
+      self.resetCursor()
     return queryResults
 
   def firstRow(self, newCursor=False):
@@ -144,9 +168,10 @@ class DbConn(object):
     if not queryCursor:
       return False
     firstRow = queryCursor.fetchone()
-    queryCursor.close()
-    if not newCursor:
-      self._cursor = None
+    if newCursor:
+      self.resetCursor(cursor=queryCursor)
+    else:
+      self.resetCursor()
     return firstRow
 
   def firstValue(self, newCursor=False):

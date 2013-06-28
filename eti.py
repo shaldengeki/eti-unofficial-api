@@ -6,16 +6,24 @@
   Released under WTFPL <http://www.wtfpl.net/txt/copying>
 """
 
+import __builtin__
 import collections
 import json
 import pytz
+
+def getBuiltIn(name):
+  return getattr(__builtin__, name)
 
 def recursiveSerialize(item):
   resultDict = {}
   try:
     items = item.__dict__.iteritems()
   except AttributeError:
-    items = item.iteritems()
+    try:
+      items = item.iteritems()
+    except AttributeError:
+      # we've passed in a scalar. just return it.
+      return item
   for k,v in items:
     if isinstance(v, BaseObject):
       v = v.dict()
@@ -89,6 +97,7 @@ class BaseObject(object):
   '''
   Base object with common features.
   '''
+  dbFields = {}
   def __str__(self):
     return str(self.dict())
 
@@ -106,15 +115,31 @@ class BaseObject(object):
       setattr(self, key, attrDict[key])
     return self
 
+  def setDB(self, attrDict):
+    """
+      Sets attributes of this object with database fields found in dict, translated into object attributes using dbFields.
+    """
+    translatedDict = {}
+    for dbField in attrDict:
+      if dbField in self.dbFields:
+        translatedDict[self.dbFields[dbField][1]] = getBuiltIn(self.dbFields[dbField][0])(attrDict[dbField])
+    self.set(translatedDict)
+    return self
 
 class Post(BaseObject):
   '''
   Post-loading object for ETI unofficial API.
   '''
+  dbFields = {
+    'll_messageid': ('int', 'id'),
+    'date': ('int', 'date'),
+    'messagetext': ('unicode', 'html'),
+    'sig': ('unicode', 'sig')
+  }
   def __init__(self, db, id):
     self.db = db
     self.id = id
-    if not isinstance(self.id, int) or int(self.id) < 1:
+    if not isinstance(self.id, (int, long)) or int(self.id) < 1:
       raise InvalidPostError(self)
     else:
       self.id = int(self.id)
@@ -131,26 +156,39 @@ class Post(BaseObject):
   def __eq__(self, post):
     return self.id == post.id
 
-  def load(self):
+  def setDB(self, attrDict):
+    if 'sig' in attrDict:
+      attrDict['sig'] = attrDict['sig'] if attrDict['sig'] != 'False' else None
+    postTopic = Topic(self.db, int(attrDict['ll_topicid']))
+    postUser = User(self.db, int(attrDict['userid']))
+    self.set({
+      'topic': postTopic.setDB(attrDict),
+      'user': postUser.setDB(attrDict),
+    })
+    return super(Post, self).setDB(attrDict)
+
+  def load(self, includes=None):
     """
     Fetches post info.
     """
-    dbPost = self.db.table("posts").fields("*").where(ll_messageid=self.id).firstRow()
+    self.db.table("posts").fields("*").where(ll_messageid=self.id)
+    if includes is not None:
+      for obj in includes:
+        if obj == 'topic':
+          self.db.join('topics ON topics.ll_topicid=posts.ll_topicid')
+        elif obj == 'user':
+          self.db.join('users ON users.id=posts.userid')
+
+    dbPost = self.db.firstRow()
     if not dbPost:
       raise InvalidPostError(self)
-    postInfo = {
-      'id': int(dbPost['ll_messageid']),
-      'topic': Topic(self.db, int(dbPost['ll_topicid'])),
-      'user': User(self.db, int(dbPost['userid'])),
-      'date': int(dbPost['date']),
-      'html': dbPost['messagetext'],
-      'sig': dbPost['sig'] if dbPost['sig'] != 'False' else None
-    }
-    self.set(postInfo)
+
+    self.setDB(dbPost)
 
     # this needs to be after the topic is set.
     foo = self.getPage()
     return self
+
   def getPage(self):
     if not hasattr(self, 'topic'):
       self.load()
@@ -205,72 +243,38 @@ class PostList(BaseList):
     super(PostList, self).__init__(db)
     self._table = "posts"
     self._order = "`date` DESC"
-  def search(self, query=None):
+  def search(self, query=None, includes=None):
     super(PostList, self).search(query=query)
-    self.db.fields("ll_messageid AS id", "ll_topicid as topic_id", "userid as user_id", "date", "messagetext as html", "sig")
+    if includes is not None:
+      for include in includes:
+        if include == 'user':
+          self.db.join('users ON posts.userid=users.id')
+        elif include == 'topic':
+          self.db.join('topics ON posts.ll_topicid=topics.ll_topicid')
+
     resultPosts = []
     for post in self.db.query():
-      postInfo = {
-        'id': int(post['id']),
-        'topic': Topic(self.db, int(post['topic_id'])),
-        'user': User(self.db, int(post['user_id'])),
-        'date': int(post['date']),
-        'html': post['html'],
-        'sig': post['sig'] if post['sig'] != 'False' else None
-      }
-      newPost = Post(self.db, postInfo['id'])
-      resultPosts.append(newPost.set(postInfo))
+      newPost = Post(self.db, post['ll_messageid'])
+      resultPosts.append(newPost.setDB(post))
 
     # needs to be outside of the query() loop since getPage() pulls from the db
     [post.getPage() for post in resultPosts]
     return resultPosts
 
-class TopicList(BaseList):
-  '''
-  Topic list object for ETI unofficial API.
-  '''
-  def __init__(self, db, tags=None):
-    super(TopicList, self).__init__(db)
-    self._table = "topics"
-    self._tags = tags
-    self._firstPost = True
-    self._order = "`lastPostTime` DESC"
-  def tags(self, tags):
-    self._tags = tags
-    return self
-  def firstPost(self, firstPost):
-    self._firstPost = bool(firstPost)
-    return self
-  def search(self, query=None):
-    super(TopicList, self).search(query=query)
-    self.db.fields('ll_topicid AS id', 'postCount as post_count', 'lastPostTime as last_post_time', 'title', 'userid as user_id', 'username').join('users ON id = userid')
-    if self._tags is not None:
-      self.db.table("tags_topics").join("`topics` ON `ll_topicid` = `topic_id`").where(tag_id=[str(int(tag.id)) for tag in self._tags])
-    if query is not None:
-      self.db.match(['`topics`.`title`'], query)
-    resultTopics = []
-    for topic in self.db.query():
-      newUser = User(self.db, int(topic['user_id']))
-      topicInfo = {
-        'id': int(topic['id']),
-        'post_count': int(topic['post_count']),
-        'last_post_time': int(topic['last_post_time']),
-        'title': topic['title'],
-        'user': newUser.set({'name': topic['username']})
-      }
-      newTopic = Topic(self.db, topicInfo['id'])
-      resultTopics.append(newTopic.set(topicInfo))
-    [topic.set({'tags': topic.getTags()}) for topic in resultTopics]
-    return resultTopics
-
 class Topic(BaseObject):
   '''
   Topic-loading object for ETI unofficial API.
   '''
+  dbFields = {
+    'll_topicid': ('int', 'id'),
+    'title': ('unicode', 'title'),
+    'postCount': ('int', 'post_count'),
+    'lastPostTime': ('int', 'last_post_time')
+  }
   def __init__(self, db, id):
     self.db = db
     self.id = id
-    if not isinstance(id, int) or int(id) < 1:
+    if not isinstance(self.id, (int, long)) or int(self.id) < 1:
       raise InvalidTopicError(self)
 
   def __len__(self):
@@ -288,22 +292,40 @@ class Topic(BaseObject):
   def __eq__(self, topic):
     return self.id == topic.id
 
-  def load(self):
+  def setDB(self, attrDict):
+    if 'userid' in attrDict:
+      topicUser = User(self.db, int(attrDict['userid']))
+      self.set({
+        'user': topicUser.setDB(attrDict),
+      })
+    return super(Topic, self).setDB(attrDict)
+
+  def load(self, includes=None):
     """
     Fetches topic info.
     """
-    dbTopic = self.db.table("topics").where(ll_topicid=str(self.id)).firstRow()
+
+    self.db.table("topics").where(ll_topicid=str(self.id))
+
+    includeTags = False    
+    if includes is not None:
+      for include in includes:
+        if include == 'tags':
+          includeTags = True
+        elif include == 'user':
+          self.db.join('users ON users.id=topics.userid')
+
+    dbTopic = self.db.firstRow()
     if not dbTopic:
       raise InvalidTopicError(self)
-    topicInfo = {
-      'id': int(dbTopic['ll_topicid']),
-      'post_count': int(dbTopic['postCount']),
-      'last_post_time': int(dbTopic['lastPostTime']),
-      'title': dbTopic['title'],
-      'user': User(self.db, int(dbTopic['userid'])),
-      'tags': self.getTags()
-    }
-    self.set(topicInfo)
+
+    self.setDB(dbTopic)
+
+    if includeTags:
+      self.set({
+        'tags': self.getTags()
+      })
+
     return self
 
   def getTags(self):
@@ -329,14 +351,71 @@ class Topic(BaseObject):
     dbTopicUsers = self.db.fields("`userid`", "COUNT(*) AS `count`").table("posts").where(ll_topicid=str(self.id)).group("userid").order("`count` DESC").query()
     return [{'user': User(self.db, int(dbUser['userid'])), 'posts': int(dbUser['count'])} for dbUser in dbTopicUsers]
 
+class TopicList(BaseList):
+  '''
+  Topic list object for ETI unofficial API.
+  '''
+  def __init__(self, db, tags=None):
+    super(TopicList, self).__init__(db)
+    self._table = "topics"
+    self._tags = tags
+    self._firstPost = True
+    self._order = "`lastPostTime` DESC"
+  def tags(self, tags):
+    self._tags = tags
+    return self
+  def firstPost(self, firstPost):
+    self._firstPost = bool(firstPost)
+    return self
+  def search(self, query=None, includes=None):
+    super(TopicList, self).search(query=query)
+    if self._tags is not None:
+      self.db.table("tags_topics").join("`topics` ON `ll_topicid` = `topic_id`").where(tag_id=[str(int(tag.id)) for tag in self._tags])
+
+    self.db.fields('*')
+
+    includeTags = False    
+    if includes is not None:
+      for include in includes:
+        if include == 'tags':
+          includeTags = True
+        elif include == 'user':
+          self.db.join('users ON userid=id')
+
+    if query is not None:
+      self.db.match(['`topics`.`title`'], query)
+
+    resultTopics = []
+    for topic in self.db.query():
+      newTopic = Topic(self.db, topic['ll_topicid'])
+      resultTopics.append(newTopic.setDB(topic))
+
+    if includeTags:
+      [topic.set({'tags': topic.getTags()}) for topic in resultTopics]
+    return resultTopics
+
 class User(BaseObject):
   '''
   User-loading object for ETI unofficial API.
   '''
+  dbFields = {
+    'id': ('int', 'id'),
+    'created': ('int', 'created'),
+    'lastactive': ('int', 'last_active'),
+    'good_tokens': ('int', 'good_tokens'),
+    'bad_tokens': ('int', 'bad_tokens'),
+    'contrib_tokens': ('int', 'tokens'),
+    'signature': ('unicode', 'signature'),
+    'quote': ('unicode', 'quote'),
+    'email': ('unicode', 'email'),
+    'im': ('unicode', 'im'),
+    'picture': ('unicode', 'picture'),
+    'status': ('int', 'status')
+  }
   def __init__(self, db, id):
     self.db = db
     self.id = id
-    if not isinstance(id, int) or int(id) < 0:
+    if not isinstance(id, (int, long)) or int(id) < 0:
       raise InvalidUserError(self)
 
   def __len__(self):
@@ -354,10 +433,32 @@ class User(BaseObject):
   def __eq__(self, topic):
     return self.id == topic.id
 
-  def load(self):
+  def setDB(self, attrDict):
+    if 'signature' in attrDict:
+      attrDict['signature'] = attrDict['signature'] if attrDict['signature'] != 'NULL' else None
+    if 'quote' in attrDict:
+      attrDict['quote'] = attrDict['quote'] if attrDict['quote'] != 'NULL' else None
+    if 'email' in attrDict:
+      attrDict['email'] = attrDict['email'] if attrDict['email'] != 'NULL' else None
+    if 'im' in attrDict:
+      attrDict['im'] = attrDict['im'] if attrDict['im'] != 'NULL' else None
+    if 'picture' in attrDict:
+      attrDict['picture'] = attrDict['picture'] if attrDict['picture'] != 'NULL' else None
+    return super(User, self).setDB(attrDict)
+
+  def load(self, includes=None):
     """
     Fetches user info.
     """
+    includePosts = False
+    includeTopics = False
+    if includes is not None:
+      for include in includes:
+        if include == 'posts':
+          includePosts = True
+        elif include == 'topics':
+          includeTopics = True
+
     if self.id == 0:
       # Anonymous user.
       dbUser = collections.defaultdict(int)
@@ -368,22 +469,15 @@ class User(BaseObject):
         raise InvalidUserError(self)
       dbNames = self.db.table("user_names").where(user_id=str(self.id)).order("`date` DESC").query()
       names = [{'name': name['name'], 'date': int(pytz.utc.localize(name['date']).strftime('%s'))} for name in dbNames]
-    userInfo = {
-      'id': int(dbUser['id']),
-      'names': names,
-      'created': int(dbUser['created']),
-      'last_active': int(dbUser['lastactive']),
-      'good_tokens': int(dbUser['good_tokens']),
-      'bad_tokens': int(dbUser['bad_tokens']),
-      'tokens': int(dbUser['contrib_tokens']),
-      'signature': dbUser['signature'] if dbUser['signature'] != "NULL" else None,
-      'quote': dbUser['quote'] if dbUser['quote'] != "NULL" else None,
-      'email': dbUser['email'] if dbUser['email'] != "NULL" else None,
-      'im': dbUser['im'] if dbUser['im'] != "NULL" else None,
-      'picture': dbUser['picture'] if dbUser['picture'] != "NULL" else None,
-      'status': int(dbUser['status']),
-    }
-    self.set(userInfo)
+    self.setDB(dbUser)
+    self.set({
+      'names': names
+    })
+    if includePosts:
+      self.posts
+    if includeTopics:
+      self.topics
+
     return self
 
   def is_authenticated(self):
@@ -418,6 +512,15 @@ class Tag(BaseObject):
   '''
   Tag-loading object for ETI unofficial API.
   '''
+  dbFields = {
+    'id': ('int', 'id'),
+    'access': ('int', 'access'),
+    'participation': ('int', 'participation'),
+    'permanent': ('int', 'permanent'),
+    'inceptive': ('int', 'inceptive'),
+    'name': ('unicode', 'name'),
+    'description': ('unicode', 'description')
+  }
   def __init__(self, db, title):
     self.db = db
     self.name = title
@@ -437,34 +540,49 @@ class Tag(BaseObject):
   def __eq__(self, tag):
     return self.name == tag.name
 
-  def load(self):
+  def load(self, includes=None):
     """
     Fetches topic info.
     """
+    includeDependencies = False
+    includeForbiddens = False
+    includeRelateds = False
+    includeStaff = False
+    if includes is not None:
+      for include in includes:
+        if include == 'dependencies':
+          includeDependencies = True
+        elif include == 'forbiddens':
+          includeForbiddens = True
+        elif include == 'relateds':
+          includeRelateds = True
+        elif include == 'staff':
+          includeStaff = True
+
     dbTag = self.db.table("tags").where(name=str(self.name)).firstRow()
     if not dbTag:
       raise InvalidTagError(self)
     tagID = self.id
-    dbDependencies = self.db.table("tags_dependent").fields("name").join("`tags` ON `tags_dependent`.`parent_tag_id` = `tags`.`id`").where(child_tag_id=str(tagID)).list("name")
-    dbDependencies = dbDependencies if dbDependencies else []
-    dbForbiddens = self.db.table("tags_forbidden").fields("name").join("`tags` ON `tags_forbidden`.`forbidden_tag_id` = `tags`.`id`").where(tag_id=str(tagID)).list("name")
-    dbForbiddens = dbForbiddens if dbForbiddens else []
-    dbRelated = self.db.table("tags_related").fields("name").join("`tags` ON `tags_related`.`parent_tag_id` = `tags`.`id`").where(child_tag_id=str(tagID)).list("name")
-    dbRelated = dbRelated if dbRelated else []
 
-    tagInfo = {
-      'name': dbTag['name'],
-      'description': dbTag['description'],
-      'access': int(dbTag['access']),
-      'participation': int(dbTag['participation']),
-      'permanent': int(dbTag['permanent']),
-      'inceptive': int(dbTag['inceptive']),
-      'dependent': dbDependencies,
-      'forbidden': dbForbiddens,
-      'related': dbRelated,
-      'staff': self.getStaff()
-    }
-    self.set(tagInfo)
+    self.setDB(dbTag)
+
+    includeFields = {}
+    if includeDependencies:
+      dbDependencies = self.db.table("tags_dependent").fields("name").join("`tags` ON `tags_dependent`.`parent_tag_id` = `tags`.`id`").where(child_tag_id=str(tagID)).list("name")
+      dbDependencies = dbDependencies if dbDependencies else []
+      includeFields['dependent'] = dbDependencies
+    if includeForbiddens:
+      dbForbiddens = self.db.table("tags_forbidden").fields("name").join("`tags` ON `tags_forbidden`.`forbidden_tag_id` = `tags`.`id`").where(tag_id=str(tagID)).list("name")
+      dbForbiddens = dbForbiddens if dbForbiddens else []
+      includeFields['forbidden'] = dbForbiddens
+    if includeRelateds:
+      dbRelated = self.db.table("tags_related").fields("name").join("`tags` ON `tags_related`.`parent_tag_id` = `tags`.`id`").where(child_tag_id=str(tagID)).list("name")
+      dbRelated = dbRelated if dbRelated else []
+      includeFields['related'] = dbRelated
+    if includeStaff:
+      includeFields['staff'] = self.getStaff()
+
+    self.set(includeFields)
     return self
 
   def getStaff(self):

@@ -8,22 +8,21 @@
 
 from flask import Flask, request, jsonify, g, redirect, url_for, abort, render_template, flash
 import flask_login
-from functools import wraps
+import functools
 import urllib2
 import urllib
 import sys, os
+import traceback
 
 import DbConn
 from eti import InvalidTopicError, InvalidPostError, InvalidUserError, InvalidTagError, Topic, Post, User, TopicList, PostList, Tag
 
 # database, secret token config
 app = Flask(__name__)
-
 DB_CREDENTIALS_FILE = "config.txt"
 with open(DB_CREDENTIALS_FILE, 'r') as f:
   MYSQL_USERNAME,MYSQL_PASSWORD,MYSQL_DB = f.readline().strip().split(',')
   app.secret_key = f.readline().strip()
-
 app.config.from_object(__name__)
 
 # initialize flask-login
@@ -31,6 +30,7 @@ login_manager = flask_login.LoginManager()
 login_manager.session_protection = "strong"
 login_manager.init_app(app)
 
+# flask user functions.
 @login_manager.user_loader
 def load_user(userid):
   try:
@@ -51,6 +51,21 @@ def unauthorized_handler():
   resp.status_code = 401
   return resp
 
+def current_user_required(f):
+  '''
+    Decorator for functions that require the user to both 
+      be logged-in, and 
+      have the given userID.
+  '''
+  @functools.wraps(f)
+  def decorated_function(*args, **kwargs):
+    if not flask_login.current_user.is_authenticated() or int(flask_login.current_user.get_id()) != int(kwargs['userid']):
+      return unauthorized()
+    else:
+      return flask_login.login_required(f)(*args, **kwargs)
+  return decorated_function
+
+# output response shorthand functions.
 def jsonify_list(outputList, key):
   resp = jsonify({key: outputList})
   resp.status_code = 200
@@ -101,12 +116,6 @@ def api_root():
 def api_topics():
   topicList = TopicList(g.db)
   query = request.args['query'] if 'query' in request.args else None
-  if 'user' in request.args:
-    try:
-      filterUser = User(g.db, int(request.args['user']))
-    except InvalidUserError, e:
-      return not_found()
-    topicList.user(filterUser)
   if 'tag' in request.args:
     tagNames = request.args.getlist('tag')
     # TODO
@@ -116,13 +125,13 @@ def api_topics():
   if 'limit' in request.args:
     topicLimit = 1000 if int(request.args['limit']) > 1000 or int(request.args['limit']) < 1 else int(request.args['limit'])
     topicList.limit(topicLimit)
-  searchTopics = [topic.dict() for topic in topicList.search(query=query)]
+  searchTopics = [topic.dict() for topic in topicList.search(query=query, includes=['user', 'tags'])]
   return jsonify_list(searchTopics, 'topics')
 
 @app.route('/topics/<int:topicid>')
 def api_topic(topicid):
   try:
-    topicObj = Topic(g.db, topicid).load()
+    topicObj = Topic(g.db, topicid).load(includes=['user', 'tags'])
   except InvalidTopicError:
     topicObj = None
   return jsonify_object(topicObj)
@@ -146,7 +155,7 @@ def api_topic_posts(topicid):
   if 'start' in request.args:
     requestedStart = int(request.args['start'])
     postList.start(0 if requestedStart < 0 else requestedStart)
-  searchPosts = [post.dict() for post in postList.search()]
+  searchPosts = [post.dict() for post in postList.search(includes=['user'])]
   return jsonify_list(searchPosts, 'posts')
 
 @app.route('/topics/<int:topicid>/users')
@@ -164,7 +173,7 @@ def api_posts():
 @app.route('/posts/<int:postid>')
 def api_post(postid):
   try:
-    postObj = Post(g.db, postid).load()
+    postObj = Post(g.db, postid).load(includes=['user', 'topic'])
     postObj.topic = postObj.topic.dict()
   except InvalidPostError:
     postObj = None
@@ -183,30 +192,35 @@ def api_user(userid):
   return jsonify_object(userObj)
 
 @app.route('/users/<int:userid>/posts')
-@flask_login.login_required
+@current_user_required
 def api_user_posts(userid):
   try:
-    userObj = User(g.db, userid)
-  except InvalidUserError:
-    return not_found()
-  postList = PostList(g.db).user(userObj)
-  if 'topic' in request.args:
     try:
-      filterTopic = Topic(g.db, int(request.args['topic']))
-    except InvalidUserError, e:
+      userObj = User(g.db, userid)
+    except InvalidUserError:
       return not_found()
-    postList.topic(filterTopic)
-  if 'limit' in request.args:
-    requestedLimit = int(request.args['limit'])
-    postList.limit(1000 if requestedLimit > 1000 or requestedLimit < 1 else requestedLimit)
-  if 'start' in request.args:
-    requestedStart = int(request.args['start'])
-    postList.start(0 if requestedStart < 0 else requestedStart)
-  searchPosts = [post.load().dict() for post in postList.search()]
-  return jsonify_list(searchPosts, 'posts')
+    postList = PostList(g.db).user(userObj)
+    if 'topic' in request.args:
+      try:
+        filterTopic = Topic(g.db, int(request.args['topic']))
+      except InvalidUserError, e:
+        return not_found()
+      postList.topic(filterTopic)
+    if 'limit' in request.args:
+      requestedLimit = int(request.args['limit'])
+      postList.limit(1000 if requestedLimit > 1000 or requestedLimit < 1 else requestedLimit)
+    if 'start' in request.args:
+      requestedStart = int(request.args['start'])
+      postList.start(0 if requestedStart < 0 else requestedStart)
+    searchPosts = [post.load().dict() for post in postList.search(includes=['topic', 'user'])]
+    return jsonify_list(searchPosts, 'posts')
+  except Exception as e:
+    print traceback.format_exc()
+    print sys.exc_info()[0]
+    raise e
 
 @app.route('/users/<int:userid>/topics')
-@flask_login.login_required
+@current_user_required
 def api_user_topics(userid):
   try:
     userObj = User(g.db, userid)
@@ -233,10 +247,14 @@ def api_tags():
 @app.route('/tags/<title>')
 def api_tag(title):
   try:
-    tagObj = Tag(g.db, title).load()
-  except InvalidTagError:
-    tagObj = None
-  return jsonify_object(tagObj)
+    try:
+      tagObj = Tag(g.db, title).load()
+    except InvalidTagError:
+      tagObj = None
+    return jsonify_object(tagObj)
+  except Exception as e:
+    print e
+    raise e
 
 @app.route('/tags/<title>/topics')
 def api_tag_topics(title):
