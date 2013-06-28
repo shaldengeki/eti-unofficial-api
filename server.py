@@ -132,16 +132,14 @@ def api_topics():
       topicList.limit(topicLimit)
     searchTopics = [topic.dict() for topic in topicList.search(query=query, includes=['user', 'tags'])]
     return jsonify_list(searchTopics, 'topics')
-  except Exception as e:
-    print traceback.format_exc()
-    print sys.exc_info()[0]
-    raise e
+  except InvalidTagError:
+    return not_found()
 @app.route('/topics/<int:topicid>')
 def api_topic(topicid):
   try:
     topicObj = Topic(g.db, topicid).load(includes=['user', 'tags'])
   except InvalidTopicError:
-    topicObj = None
+    return not_found()
   return jsonify_object(topicObj)
 
 @app.route('/topics/<int:topicid>/posts')
@@ -171,7 +169,7 @@ def api_topic_users(topicid):
   try:
     users = [{'user': user['user'].load().dict(), 'posts': int(user['posts'])} for user in Topic(g.db, topicid).users]
   except InvalidTopicError:
-    users = None
+    return not_found()
   return jsonify_list(users, 'users')
 
 @app.route('/posts')
@@ -184,7 +182,7 @@ def api_post(postid):
     postObj = Post(g.db, postid).load(includes=['user', 'topic'])
     postObj.topic = postObj.topic.dict()
   except InvalidPostError:
-    postObj = None
+    return not_found()
   return jsonify_object(postObj)
 
 @app.route('/users')
@@ -196,7 +194,7 @@ def api_user(userid):
   try:
     userObj = User(g.db, userid).load()
   except InvalidUserError:
-    userObj = None
+    return not_found()
   return jsonify_object(userObj)
 
 @app.route('/users/<int:userid>/posts')
@@ -230,22 +228,25 @@ def api_user_topics(userid):
     userObj = User(g.db, userid)
   except InvalidUserError:
     return not_found()
-  topicList = TopicList(g.db).user(userObj)
-  query = request.args['query'] if 'query' in request.args else None
-  if 'tag' in request.args:
-    tagNames = request.args.getlist('tag')
-    for name in tagNames:
-      if name.startswith("-"):
-        topicList.excludeTag(Tag(g.db, name[1:]))
-      else:
-        topicList.includeTag(Tag(g.db, name))
-  if 'limit' in request.args:
-    requestedLimit = int(request.args['limit'])
-    topicList.limit(1000 if requestedLimit > 1000 or requestedLimit < 1 else requestedLimit)
-  if 'start' in request.args:
-    requestedStart = int(request.args['start'])
-    topicList.start(0 if requestedStart < 0 else requestedStart)
-  searchTopics = [post.dict() for post in topicList.search(query=query, includes=['user', 'tags'])]
+  try:
+    topicList = TopicList(g.db).user(userObj)
+    query = request.args['query'] if 'query' in request.args else None
+    if 'tag' in request.args:
+      tagNames = request.args.getlist('tag')
+      for name in tagNames:
+        if name.startswith("-"):
+          topicList.excludeTag(Tag(g.db, name[1:]))
+        else:
+          topicList.includeTag(Tag(g.db, name))
+    if 'limit' in request.args:
+      requestedLimit = int(request.args['limit'])
+      topicList.limit(1000 if requestedLimit > 1000 or requestedLimit < 1 else requestedLimit)
+    if 'start' in request.args:
+      requestedStart = int(request.args['start'])
+      topicList.start(0 if requestedStart < 0 else requestedStart)
+    searchTopics = [post.dict() for post in topicList.search(query=query, includes=['user', 'tags'])]
+  except InvalidTagError:
+    return not_found()
   return jsonify_list(searchTopics, 'topics')
 
 @app.route('/tags')
@@ -257,7 +258,7 @@ def api_tag(title):
   try:
     tagObj = Tag(g.db, title).load()
   except InvalidTagError:
-    tagObj = None
+    return not_found()
   return jsonify_object(tagObj)
 
 @app.route('/tags/<title>/topics')
