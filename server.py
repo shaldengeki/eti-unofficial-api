@@ -243,15 +243,10 @@ def api_tags():
 @app.route('/tags/<title>')
 def api_tag(title):
   try:
-    try:
-      tagObj = Tag(g.db, title).load()
-    except InvalidTagError:
-      tagObj = None
-    return jsonify_object(tagObj)
-  except Exception as e:
-    print traceback.format_exc()
-    print sys.exc_info()[0]
-    raise e
+    tagObj = Tag(g.db, title).load()
+  except InvalidTagError:
+    tagObj = None
+  return jsonify_object(tagObj)
 
 @app.route('/tags/<title>/topics')
 def api_tag_topics(title):
