@@ -195,29 +195,25 @@ def api_user(userid):
 @current_user_required
 def api_user_posts(userid):
   try:
+    userObj = User(g.db, userid)
+  except InvalidUserError:
+    return not_found()
+  postList = PostList(g.db)
+  postList.db.where(('posts.userid=%s', userObj.id))
+  if 'topic' in request.args:
     try:
-      userObj = User(g.db, userid)
-    except InvalidUserError:
+      filterTopic = Topic(g.db, int(request.args['topic']))
+    except InvalidUserError, e:
       return not_found()
-    postList = PostList(g.db).user(userObj)
-    if 'topic' in request.args:
-      try:
-        filterTopic = Topic(g.db, int(request.args['topic']))
-      except InvalidUserError, e:
-        return not_found()
-      postList.topic(filterTopic)
-    if 'limit' in request.args:
-      requestedLimit = int(request.args['limit'])
-      postList.limit(1000 if requestedLimit > 1000 or requestedLimit < 1 else requestedLimit)
-    if 'start' in request.args:
-      requestedStart = int(request.args['start'])
-      postList.start(0 if requestedStart < 0 else requestedStart)
-    searchPosts = [post.load().dict() for post in postList.search(includes=['topic', 'user'])]
-    return jsonify_list(searchPosts, 'posts')
-  except Exception as e:
-    print traceback.format_exc()
-    print sys.exc_info()[0]
-    raise e
+    postList.topic(filterTopic)
+  if 'limit' in request.args:
+    requestedLimit = int(request.args['limit'])
+    postList.limit(1000 if requestedLimit > 1000 or requestedLimit < 1 else requestedLimit)
+  if 'start' in request.args:
+    requestedStart = int(request.args['start'])
+    postList.start(0 if requestedStart < 0 else requestedStart)
+  searchPosts = [post.dict() for post in postList.search(includes=['topic', 'user'])]
+  return jsonify_list(searchPosts, 'posts')
 
 @app.route('/users/<int:userid>/topics')
 @current_user_required
@@ -237,7 +233,7 @@ def api_user_topics(userid):
   if 'start' in request.args:
     requestedStart = int(request.args['start'])
     topicList.start(0 if requestedStart < 0 else requestedStart)
-  searchTopics = [post.load().dict() for post in topicList.search(query=query)]
+  searchTopics = [post.dict() for post in topicList.search(query=query, includes=['user', 'tags'])]
   return jsonify_list(searchTopics, 'topics')
 
 @app.route('/tags')
@@ -253,7 +249,8 @@ def api_tag(title):
       tagObj = None
     return jsonify_object(tagObj)
   except Exception as e:
-    print e
+    print traceback.format_exc()
+    print sys.exc_info()[0]
     raise e
 
 @app.route('/tags/<title>/topics')
@@ -270,7 +267,7 @@ def api_tag_topics(title):
   if 'start' in request.args:
     requestedStart = int(request.args['start'])
     topicList.start(0 if requestedStart < 0 else requestedStart)
-  searchTopics = [post.load().dict() for post in topicList.search(query=query)]
+  searchTopics = [topic.dict() for topic in topicList.search(query=query, includes=['user', 'tags'])]
   return jsonify_list(searchTopics, 'topics')
 
 @app.route('/login')

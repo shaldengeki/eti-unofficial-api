@@ -163,7 +163,7 @@ class Post(BaseObject):
     postUser = User(self.db, int(attrDict['userid']))
     self.set({
       'topic': postTopic.setDB(attrDict),
-      'user': postUser.setDB(attrDict),
+      'user': postUser.setDB(attrDict)
     })
     return super(Post, self).setDB(attrDict)
 
@@ -171,12 +171,14 @@ class Post(BaseObject):
     """
     Fetches post info.
     """
-    self.db.table("posts").fields("*").where(ll_messageid=self.id)
+    self.db.table("posts").fields("posts.*").where(ll_messageid=self.id)
     if includes is not None:
       for obj in includes:
         if obj == 'topic':
+          self.db.fields('topics.*')
           self.db.join('topics ON topics.ll_topicid=posts.ll_topicid')
         elif obj == 'user':
+          self.db.fields('users.*')
           self.db.join('users ON users.id=posts.userid')
 
     dbPost = self.db.firstRow()
@@ -245,11 +247,14 @@ class PostList(BaseList):
     self._order = "`date` DESC"
   def search(self, query=None, includes=None):
     super(PostList, self).search(query=query)
+    self.db.fields('posts.*')
     if includes is not None:
       for include in includes:
         if include == 'user':
+          self.db.fields('users.*')
           self.db.join('users ON posts.userid=users.id')
         elif include == 'topic':
+          self.db.fields('topics.*')
           self.db.join('topics ON posts.ll_topicid=topics.ll_topicid')
 
     resultPosts = []
@@ -296,7 +301,7 @@ class Topic(BaseObject):
     if 'userid' in attrDict:
       topicUser = User(self.db, int(attrDict['userid']))
       self.set({
-        'user': topicUser.setDB(attrDict),
+        'user': topicUser.setDB(attrDict)
       })
     return super(Topic, self).setDB(attrDict)
 
@@ -305,7 +310,7 @@ class Topic(BaseObject):
     Fetches topic info.
     """
 
-    self.db.table("topics").where(ll_topicid=str(self.id))
+    self.db.table("topics").fields('topics.*').where(ll_topicid=str(self.id))
 
     includeTags = False    
     if includes is not None:
@@ -313,6 +318,7 @@ class Topic(BaseObject):
         if include == 'tags':
           includeTags = True
         elif include == 'user':
+          self.db.fields('users.*')
           self.db.join('users ON users.id=topics.userid')
 
     dbTopic = self.db.firstRow()
@@ -370,9 +376,8 @@ class TopicList(BaseList):
   def search(self, query=None, includes=None):
     super(TopicList, self).search(query=query)
     if self._tags is not None:
-      self.db.table("tags_topics").join("`topics` ON `ll_topicid` = `topic_id`").where(tag_id=[str(int(tag.id)) for tag in self._tags])
-
-    self.db.fields('*')
+      self.db.table("tags_topics").fields('tags_topics.*').join("topics ON topics.ll_topicid=tags_topics.topic_id").where(tag_id=[str(int(tag.id)) for tag in self._tags])
+    self.db.fields('topics.*')
 
     includeTags = False    
     if includes is not None:
@@ -380,6 +385,7 @@ class TopicList(BaseList):
         if include == 'tags':
           includeTags = True
         elif include == 'user':
+          self.db.fields('users.*')
           self.db.join('users ON userid=id')
 
     if query is not None:
@@ -446,19 +452,10 @@ class User(BaseObject):
       attrDict['picture'] = attrDict['picture'] if attrDict['picture'] != 'NULL' else None
     return super(User, self).setDB(attrDict)
 
-  def load(self, includes=None):
+  def load(self):
     """
     Fetches user info.
     """
-    includePosts = False
-    includeTopics = False
-    if includes is not None:
-      for include in includes:
-        if include == 'posts':
-          includePosts = True
-        elif include == 'topics':
-          includeTopics = True
-
     if self.id == 0:
       # Anonymous user.
       dbUser = collections.defaultdict(int)
@@ -473,11 +470,6 @@ class User(BaseObject):
     self.set({
       'names': names
     })
-    if includePosts:
-      self.posts
-    if includeTopics:
-      self.topics
-
     return self
 
   def is_authenticated(self):
@@ -526,7 +518,7 @@ class Tag(BaseObject):
     self.name = title
     if not isinstance(title, basestring):
       raise InvalidTagError(self)
-    self._id = None
+    self._staff = self._dependents = self._forbiddens = self._relateds = None
 
   def __contains__(self, topic):
     return topic.id in self._topicIDs
@@ -540,80 +532,94 @@ class Tag(BaseObject):
   def __eq__(self, tag):
     return self.name == tag.name
 
-  def load(self, includes=None):
+  def load(self):
     """
     Fetches topic info.
     """
-    includeDependencies = False
-    includeForbiddens = False
-    includeRelateds = False
-    includeStaff = False
-    if includes is not None:
-      for include in includes:
-        if include == 'dependencies':
-          includeDependencies = True
-        elif include == 'forbiddens':
-          includeForbiddens = True
-        elif include == 'relateds':
-          includeRelateds = True
-        elif include == 'staff':
-          includeStaff = True
 
     dbTag = self.db.table("tags").where(name=str(self.name)).firstRow()
     if not dbTag:
       raise InvalidTagError(self)
-    tagID = self.id
-
     self.setDB(dbTag)
 
-    includeFields = {}
-    if includeDependencies:
-      dbDependencies = self.db.table("tags_dependent").fields("name").join("`tags` ON `tags_dependent`.`parent_tag_id` = `tags`.`id`").where(child_tag_id=str(tagID)).list("name")
-      dbDependencies = dbDependencies if dbDependencies else []
-      includeFields['dependent'] = dbDependencies
-    if includeForbiddens:
-      dbForbiddens = self.db.table("tags_forbidden").fields("name").join("`tags` ON `tags_forbidden`.`forbidden_tag_id` = `tags`.`id`").where(tag_id=str(tagID)).list("name")
-      dbForbiddens = dbForbiddens if dbForbiddens else []
-      includeFields['forbidden'] = dbForbiddens
-    if includeRelateds:
-      dbRelated = self.db.table("tags_related").fields("name").join("`tags` ON `tags_related`.`parent_tag_id` = `tags`.`id`").where(child_tag_id=str(tagID)).list("name")
-      dbRelated = dbRelated if dbRelated else []
-      includeFields['related'] = dbRelated
-    if includeStaff:
-      includeFields['staff'] = self.getStaff()
-
-    self.set(includeFields)
     return self
 
+  def getId(self):
+    tagID = self.db.table("tags").fields("id").where(name=str(self.name)).firstValue()
+    if not tagID:
+      raise InvalidTagError(self)
+    return int(tagID)
+
   def getStaff(self):
-    foo = self.id
-    dbTagStaff = self.db.table("tags_users").fields("username", "user_id", "role").join("users ON user_id = id").where(tag_id=self.id).order("role DESC, username ASC")
+    if not hasattr(self, 'id'):
+      self.id = self.getId()
+    dbTagStaff = self.db.table("tags_users").fields(*(["user_id", "role", 'users.*'])).join("users ON user_id = id").where(tag_id=self.id).order("role DESC, username ASC")
     resultStaff = []
     for user in dbTagStaff.query():
-      userInfo = {
-        'id': int(user['user_id']),
-        'name': user['username']
-      }
-      newUser = User(self.db, userInfo['id'])
-      resultStaff.append({"role": int(user['role']), "user": newUser.set(userInfo)})
+      newUser = User(self.db, user['user_id'])
+      resultStaff.append({"role": int(user['role']), "user": newUser.setDB(user)})
     return resultStaff
 
   @property
-  def id(self):
-    """
-    Fetches tag ID for this title.
-    """
-    if self._id is None:
-      tagID = self.db.table("tags").fields("id").where(name=str(self.name)).firstValue()
-      if not tagID:
-        raise InvalidTagError(self)
-      self._id = int(tagID)
-    return self._id
+  def staff(self):
+    if self._staff is None:
+      self._staff = self.getStaff()
+    return self._staff
+
+  def getDependencies(self):
+    if not hasattr(self, 'id'):
+      self.id = self.getId()
+    dbDependencies = self.db.table("tags_dependent").fields("name").join("`tags` ON `tags_dependent`.`parent_tag_id` = `tags`.`id`").where(child_tag_id=str(self.id))
+    resultTags = []
+    for tag in dbDependencies.query():
+      newTag = Tag(self.db, tag['parent_tag_id'])
+      resultTags.append(newTag.setDB(tag))
+    return resultTags
+
+  @property
+  def dependent(self):
+    if self._dependents is None:
+      self._dependents = self.getDependencies()
+    return self._dependents
+
+  def getForbiddens(self):
+    if not hasattr(self, 'id'):
+      self.id = self.getId()
+    dbForbiddens = self.db.table("tags_forbidden").fields("name").join("`tags` ON `tags_forbidden`.`forbidden_tag_id` = `tags`.`id`").where(tag_id=str(self.id))
+    resultTags = []
+    for tag in dbForbiddens.query():
+      newTag = Tag(self.db, tag['forbidden_tag_id'])
+      resultTags.append(newTag.setDB(tag))
+    return resultTags
+
+  @property
+  def forbidden(self):
+    if self._forbiddens is None:
+      self._forbiddens = self.getForbiddens()
+    return self._forbiddens
+
+  def getRelateds(self):
+    if not hasattr(self, 'id'):
+      self.id = self.getId()
+    dbRelateds = self.db.table("tags_related").fields("name").join("`tags` ON `tags_related`.`parent_tag_id` = `tags`.`id`").where(child_tag_id=str(self.id))
+    resultTags = []
+    for tag in dbRelateds.query():
+      newTag = Tag(self.db, tag['parent_tag_id'])
+      resultTags.append(newTag.setDB(tag))
+    return resultTags
+
+  @property
+  def related(self):
+    if self._relateds is None:
+      self._relateds = self.getRelateds()
+    return self._relateds
 
   @property
   def topics(self):
     """
     Fetches tag topics.
     """
+    if not hasattr(self, 'id'):
+      self.id = self.getId()
     dbTagTopics = self.db.table("tags_topics").fields("topic_id").join("topics ON topics.ll_topicid = tags_topics.topic_id").where(tag_id=str(self.id)).order("topics.lastPostTime DESC").list("topic_id")
     return [Topic(self.db, int(topicID)) for topicID in dbTagTopics]
