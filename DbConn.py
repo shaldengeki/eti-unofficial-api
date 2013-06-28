@@ -98,7 +98,10 @@ class DbConn(object):
         # user has provided entry in the form
         # ("UPPER(`name`) = %s", topic.name)
         self._wheres.append(entry[0])
-        self._params.extend([entry[1]])
+        if isinstance(entry[1], (list, tuple)):
+          self._params.extend(entry[1])
+        else:
+          self._params.extend([entry[1]])
       else:
         # user has provided entry in the form
         # "UPPER(name) = 'MYNAME'"

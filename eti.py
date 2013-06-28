@@ -181,7 +181,7 @@ class Post(BaseObject):
           self.db.fields('users.*')
           self.db.join('users ON users.id=posts.userid')
 
-    dbPost = self.db.firstRow()
+    dbPost = self.db.firstRow(newCursor=True)
     if not dbPost:
       raise InvalidPostError(self)
 
@@ -195,7 +195,7 @@ class Post(BaseObject):
     if not hasattr(self, 'topic'):
       self.load()
     # get number of posts in this topic up to this post.
-    numPosts = int(self.db.table("posts").fields("COUNT(*)").where("ll_messageid < " + str(int(self.id)), ll_topicid=str(self.topic.id)).firstValue())
+    numPosts = int(self.db.table("posts").fields("COUNT(*)").where("ll_messageid < " + str(int(self.id)), ll_topicid=str(self.topic.id)).firstValue(newCursor=True))
     pageNum = int(numPosts * 1.0 / 50) + 1
     self.set({
       'page': pageNum
@@ -244,7 +244,7 @@ class PostList(BaseList):
   def __init__(self, db):
     super(PostList, self).__init__(db)
     self._table = "posts"
-    self._order = "`date` DESC"
+    self._order = "date DESC"
   def search(self, query=None, includes=None):
     super(PostList, self).search(query=query)
     self.db.fields('posts.*')
@@ -321,7 +321,7 @@ class Topic(BaseObject):
           self.db.fields('users.*')
           self.db.join('users ON users.id=topics.userid')
 
-    dbTopic = self.db.firstRow()
+    dbTopic = self.db.firstRow(newCursor=True)
     if not dbTopic:
       raise InvalidTopicError(self)
 
@@ -346,7 +346,7 @@ class Topic(BaseObject):
     """
     Fetches topic posts.
     """
-    dbTopicPosts = self.db.table("posts").where(ll_topicid=str(self.id)).order("`ll_messageid` ASC").query()
+    dbTopicPosts = self.db.table("posts").where(ll_topicid=str(self.id)).order("ll_messageid ASC").query()
     return [Post(self.db, int(dbPost['ll_messageid'])) for dbPost in dbTopicPosts]
 
   @property
@@ -354,7 +354,7 @@ class Topic(BaseObject):
     """
     Fetches topic users.
     """
-    dbTopicUsers = self.db.fields("`userid`", "COUNT(*) AS `count`").table("posts").where(ll_topicid=str(self.id)).group("userid").order("`count` DESC").query()
+    dbTopicUsers = self.db.fields("userid", "COUNT(*) AS count").table("posts").where(ll_topicid=str(self.id)).group("userid").order("count DESC").query()
     return [{'user': User(self.db, int(dbUser['userid'])), 'posts': int(dbUser['count'])} for dbUser in dbTopicUsers]
 
 class TopicList(BaseList):
@@ -364,19 +364,30 @@ class TopicList(BaseList):
   def __init__(self, db, tags=None):
     super(TopicList, self).__init__(db)
     self._table = "topics"
-    self._tags = tags
+    self._includeTags = []
+    self._excludeTags = []
     self._firstPost = True
-    self._order = "`lastPostTime` DESC"
+    self._order = "lastPostTime DESC"
+    if tags is not None:
+      self.tags(tags)
+  def includeTag(self, tag):
+    self._includeTags.append(tag)
+    return self
+  def excludeTag(self, tag):
+    self._excludeTags.append(tag)
+    return self
   def tags(self, tags):
-    self._tags = tags
+    self._includeTags = tags
     return self
   def firstPost(self, firstPost):
     self._firstPost = bool(firstPost)
     return self
   def search(self, query=None, includes=None):
+    if self._includeTags:
+      includeTagIDs = [str(int(tag.id)) for tag in self._includeTags]
     super(TopicList, self).search(query=query)
-    if self._tags is not None:
-      self.db.table("tags_topics").fields('tags_topics.*').join("topics ON topics.ll_topicid=tags_topics.topic_id").where(tag_id=[str(int(tag.id)) for tag in self._tags])
+    if self._includeTags:
+      self.db.table("tags_topics").fields('tags_topics.*').join("topics ON topics.ll_topicid=tags_topics.topic_id").where(('tag_id IN (' + ','.join(['%s'] * len(includeTagIDs)) + ')', includeTagIDs))
     self.db.fields('topics.*')
 
     includeTags = False    
@@ -389,15 +400,22 @@ class TopicList(BaseList):
           self.db.join('users ON userid=id')
 
     if query is not None:
-      self.db.match(['`topics`.`title`'], query)
+      self.db.match(['topics.title'], query)
 
     resultTopics = []
+    print self.db.queryString()
+    print self.db._params
     for topic in self.db.query():
       newTopic = Topic(self.db, topic['ll_topicid'])
       resultTopics.append(newTopic.setDB(topic))
 
-    if includeTags:
+    if includeTags or self._excludeTags:
       [topic.set({'tags': topic.getTags()}) for topic in resultTopics]
+
+    if self._excludeTags:
+      [tag.load() for tag in self._excludeTags]
+      resultTopics = [topic for topic in resultTopics if not any([excludeTag in topic.tags for excludeTag in self._excludeTags])]
+
     return resultTopics
 
 class User(BaseObject):
@@ -461,10 +479,10 @@ class User(BaseObject):
       dbUser = collections.defaultdict(int)
       names = [{'name': 'Human', 'date': None}]
     else:
-      dbUser = self.db.table("users").where(id=str(self.id)).firstRow()
+      dbUser = self.db.table("users").where(id=str(self.id)).firstRow(newCursor=True)
       if not dbUser:
         raise InvalidUserError(self)
-      dbNames = self.db.table("user_names").where(user_id=str(self.id)).order("`date` DESC").query()
+      dbNames = self.db.table("user_names").where(user_id=str(self.id)).order("date DESC").query()
       names = [{'name': name['name'], 'date': int(pytz.utc.localize(name['date']).strftime('%s'))} for name in dbNames]
     self.setDB(dbUser)
     self.set({
@@ -489,7 +507,7 @@ class User(BaseObject):
     """
     Fetches user posts.
     """
-    dbUserPosts = self.db.table("posts").fields("`ll_messageid`").where(userid=str(self.id)).order("`date` DESC").query()
+    dbUserPosts = self.db.table("posts").fields("ll_messageid").where(userid=str(self.id)).order("date DESC").query()
     return [Post(self.db, int(dbPost['ll_messageid'])) for dbPost in dbUserPosts]
 
   @property
@@ -497,7 +515,7 @@ class User(BaseObject):
     """
     Fetches user topics.
     """
-    dbUserTopics = self.db.table("topics").fields("`ll_topicid`").where(userid=str(self.id)).order("`lastPostTime` DESC").query()
+    dbUserTopics = self.db.table("topics").fields("ll_topicid").where(userid=str(self.id)).order("lastPostTime DESC").query()
     return [Topic(self.db, int(dbTopic['ll_topicid'])) for dbTopic in dbUserTopics]
 
 class Tag(BaseObject):
@@ -532,12 +550,17 @@ class Tag(BaseObject):
   def __eq__(self, tag):
     return self.name == tag.name
 
+  def __getattr__(self, attr):
+    self.load()
+    if not hasattr(self, attr):
+      raise AttributeError(attr + ' not found in object ' + self.__name__)
+    return getattr(self, attr)
+
   def load(self):
     """
     Fetches topic info.
     """
-
-    dbTag = self.db.table("tags").where(name=str(self.name)).firstRow()
+    dbTag = self.db.table("tags").where(name=str(self.name)).firstRow(newCursor=True)
     if not dbTag:
       raise InvalidTagError(self)
     self.setDB(dbTag)
@@ -545,14 +568,14 @@ class Tag(BaseObject):
     return self
 
   def getId(self):
-    tagID = self.db.table("tags").fields("id").where(name=str(self.name)).firstValue()
+    tagID = self.db.table("tags").fields("id").where(name=str(self.name)).firstValue(newCursor=True)
     if not tagID:
       raise InvalidTagError(self)
     return int(tagID)
 
   def getStaff(self):
     if not hasattr(self, 'id'):
-      self.id = self.getId()
+      self.load()
     dbTagStaff = self.db.table("tags_users").fields(*(["user_id", "role", 'users.*'])).join("users ON user_id = id").where(tag_id=self.id).order("role DESC, username ASC")
     resultStaff = []
     for user in dbTagStaff.query():
@@ -568,8 +591,8 @@ class Tag(BaseObject):
 
   def getDependencies(self):
     if not hasattr(self, 'id'):
-      self.id = self.getId()
-    dbDependencies = self.db.table("tags_dependent").fields("name").join("`tags` ON `tags_dependent`.`parent_tag_id` = `tags`.`id`").where(child_tag_id=str(self.id))
+      self.load()
+    dbDependencies = self.db.table("tags_dependent").fields("name").join("tags ON tags_dependent.parent_tag_id = tags.id").where(child_tag_id=str(self.id))
     resultTags = []
     for tag in dbDependencies.query():
       newTag = Tag(self.db, tag['parent_tag_id'])
@@ -584,8 +607,8 @@ class Tag(BaseObject):
 
   def getForbiddens(self):
     if not hasattr(self, 'id'):
-      self.id = self.getId()
-    dbForbiddens = self.db.table("tags_forbidden").fields("name").join("`tags` ON `tags_forbidden`.`forbidden_tag_id` = `tags`.`id`").where(tag_id=str(self.id))
+      self.load()
+    dbForbiddens = self.db.table("tags_forbidden").fields("name").join("tags ON tags_forbidden.forbidden_tag_id = tags.id").where(tag_id=str(self.id))
     resultTags = []
     for tag in dbForbiddens.query():
       newTag = Tag(self.db, tag['forbidden_tag_id'])
@@ -600,8 +623,8 @@ class Tag(BaseObject):
 
   def getRelateds(self):
     if not hasattr(self, 'id'):
-      self.id = self.getId()
-    dbRelateds = self.db.table("tags_related").fields("name").join("`tags` ON `tags_related`.`parent_tag_id` = `tags`.`id`").where(child_tag_id=str(self.id))
+      self.load()
+    dbRelateds = self.db.table("tags_related").fields("name").join("tags ON tags_related.parent_tag_id = tags.id").where(child_tag_id=str(self.id))
     resultTags = []
     for tag in dbRelateds.query():
       newTag = Tag(self.db, tag['parent_tag_id'])
@@ -620,6 +643,6 @@ class Tag(BaseObject):
     Fetches tag topics.
     """
     if not hasattr(self, 'id'):
-      self.id = self.getId()
+      self.load()
     dbTagTopics = self.db.table("tags_topics").fields("topic_id").join("topics ON topics.ll_topicid = tags_topics.topic_id").where(tag_id=str(self.id)).order("topics.lastPostTime DESC").list("topic_id")
     return [Topic(self.db, int(topicID)) for topicID in dbTagTopics]

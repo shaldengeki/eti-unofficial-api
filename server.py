@@ -114,20 +114,28 @@ def api_root():
 
 @app.route('/topics')
 def api_topics():
-  topicList = TopicList(g.db)
-  query = request.args['query'] if 'query' in request.args else None
-  if 'tag' in request.args:
-    tagNames = request.args.getlist('tag')
-    # TODO
-  if 'start' in request.args:
-    requestedStart = int(request.args['start'])
-    topicList.start(0 if requestedStart < 0 else requestedStart)
-  if 'limit' in request.args:
-    topicLimit = 1000 if int(request.args['limit']) > 1000 or int(request.args['limit']) < 1 else int(request.args['limit'])
-    topicList.limit(topicLimit)
-  searchTopics = [topic.dict() for topic in topicList.search(query=query, includes=['user', 'tags'])]
-  return jsonify_list(searchTopics, 'topics')
-
+  try:
+    topicList = TopicList(g.db)
+    query = request.args['query'] if 'query' in request.args else None
+    if 'tag' in request.args:
+      tagNames = request.args.getlist('tag')
+      for name in tagNames:
+        if name.startswith("-"):
+          topicList.excludeTag(Tag(g.db, name[1:]))
+        else:
+          topicList.includeTag(Tag(g.db, name))
+    if 'start' in request.args:
+      requestedStart = int(request.args['start'])
+      topicList.start(0 if requestedStart < 0 else requestedStart)
+    if 'limit' in request.args:
+      topicLimit = 1000 if int(request.args['limit']) > 1000 or int(request.args['limit']) < 1 else int(request.args['limit'])
+      topicList.limit(topicLimit)
+    searchTopics = [topic.dict() for topic in topicList.search(query=query, includes=['user', 'tags'])]
+    return jsonify_list(searchTopics, 'topics')
+  except Exception as e:
+    print traceback.format_exc()
+    print sys.exc_info()[0]
+    raise e
 @app.route('/topics/<int:topicid>')
 def api_topic(topicid):
   try:
@@ -226,7 +234,11 @@ def api_user_topics(userid):
   query = request.args['query'] if 'query' in request.args else None
   if 'tag' in request.args:
     tagNames = request.args.getlist('tag')
-    # TODO
+    for name in tagNames:
+      if name.startswith("-"):
+        topicList.excludeTag(Tag(g.db, name[1:]))
+      else:
+        topicList.includeTag(Tag(g.db, name))
   if 'limit' in request.args:
     requestedLimit = int(request.args['limit'])
     topicList.limit(1000 if requestedLimit > 1000 or requestedLimit < 1 else requestedLimit)
