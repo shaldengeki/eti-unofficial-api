@@ -111,7 +111,7 @@ def teardown_request(exception):
 @app.route('/topics')
 def api_topics():
   """
-  Topic listing. Request params: tag, start, limit
+  Topic listing. Request params: query, tag, start, limit
   """
   try:
     topicList = TopicList(g.db)
@@ -249,7 +249,7 @@ def api_user_posts(userid):
 @current_user_required
 def api_user_topics(userid):
   """
-  Display a single user's topics. Requires authentication. Request params: tag, limit, start
+  Display a single user's topics. Requires authentication. Request params: query, tag, limit, start
   """
   try:
     userObj = User(g.db, userid)
@@ -297,7 +297,7 @@ def api_tag(title):
 @app.route('/tags/<title>/topics')
 def api_tag_topics(title):
   """
-  Display a single tag's topics. Request params: limit, start
+  Display a single tag's topics. Request params: query, limit, start
   """
   try:
     tagObj = Tag(g.db, title).load()
