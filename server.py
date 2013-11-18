@@ -317,7 +317,7 @@ def api_tag_topics(title):
 @app.route('/login')
 def api_login():
   """
-  Authenticate as a user. Request params: username
+  Authenticate as a user. Request params: user
   """
   if 'user' not in request.args:
     return unauthorized()
