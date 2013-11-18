@@ -108,12 +108,11 @@ def teardown_request(exception):
   except AttributeError, e:
     pass
 
-@app.route('/')
-def api_root():
-  return 'This is the server for the ETIStats unofficial API.'
-
 @app.route('/topics')
 def api_topics():
+  """
+  Topic listing. Request params: tag, start, limit
+  """
   try:
     topicList = TopicList(g.db)
     query = request.args['query'] if 'query' in request.args else None
@@ -134,8 +133,12 @@ def api_topics():
     return jsonify_list(searchTopics, 'topics')
   except InvalidTagError:
     return not_found()
+
 @app.route('/topics/<int:topicid>')
 def api_topic(topicid):
+  """
+  Display a single topic.
+  """
   try:
     topicObj = Topic(g.db, topicid).load(includes=['user', 'tags'])
   except InvalidTopicError:
@@ -144,6 +147,9 @@ def api_topic(topicid):
 
 @app.route('/topics/<int:topicid>/posts')
 def api_topic_posts(topicid):
+  """
+  Display a single topic's posts. Request params: user, limit, start
+  """
   try:
     topicObj = Topic(g.db, topicid)
   except InvalidUserError:
@@ -166,6 +172,9 @@ def api_topic_posts(topicid):
 
 @app.route('/topics/<int:topicid>/users')
 def api_topic_users(topicid):
+  """
+  Display a single topic's users with post-counts.
+  """
   try:
     users = [{'user': user['user'].load().dict(), 'posts': int(user['posts'])} for user in Topic(g.db, topicid).users]
   except InvalidTopicError:
@@ -174,10 +183,16 @@ def api_topic_users(topicid):
 
 @app.route('/posts')
 def api_posts():
+  """
+  Display all posts. Not yet implemented.
+  """
   return 'List of ' + url_for('api_posts')
 
 @app.route('/posts/<int:postid>')
 def api_post(postid):
+  """
+  Display a single post.
+  """
   try:
     postObj = Post(g.db, postid).load(includes=['user', 'topic'])
     postObj.topic = postObj.topic.dict()
@@ -187,10 +202,16 @@ def api_post(postid):
 
 @app.route('/users')
 def api_users():
+  """
+  Listing of all users. Not yet implemented.
+  """
   return 'List of ' + url_for('api_users')
 
 @app.route('/users/<int:userid>')
 def api_user(userid):
+  """
+  Display a single user.
+  """
   try:
     userObj = User(g.db, userid).load()
   except InvalidUserError:
@@ -200,6 +221,9 @@ def api_user(userid):
 @app.route('/users/<int:userid>/posts')
 @current_user_required
 def api_user_posts(userid):
+  """
+  Display a single user's posts. Requires authentication. Request params: topic, limit, start
+  """
   try:
     userObj = User(g.db, userid)
   except InvalidUserError:
@@ -224,6 +248,9 @@ def api_user_posts(userid):
 @app.route('/users/<int:userid>/topics')
 @current_user_required
 def api_user_topics(userid):
+  """
+  Display a single user's topics. Requires authentication. Request params: tag, limit, start
+  """
   try:
     userObj = User(g.db, userid)
   except InvalidUserError:
@@ -251,10 +278,16 @@ def api_user_topics(userid):
 
 @app.route('/tags')
 def api_tags():
+  """
+  Listing of all tags. Not yet implemented.
+  """
   return 'List of ' + url_for('api_tags')
 
 @app.route('/tags/<title>')
 def api_tag(title):
+  """
+  Display a single tag.
+  """
   try:
     tagObj = Tag(g.db, title).load()
   except InvalidTagError:
@@ -263,6 +296,9 @@ def api_tag(title):
 
 @app.route('/tags/<title>/topics')
 def api_tag_topics(title):
+  """
+  Display a single tag's topics. Request params: limit, start
+  """
   try:
     tagObj = Tag(g.db, title).load()
   except InvalidTagError:
@@ -280,6 +316,9 @@ def api_tag_topics(title):
 
 @app.route('/login')
 def api_login():
+  """
+  Authenticate as a user. Request params: username
+  """
   if 'user' not in request.args:
     return unauthorized()
   # hit the ETI auth api.
@@ -300,8 +339,19 @@ def api_login():
 @app.route('/logout')
 @flask_login.login_required
 def api_logout():
+  """
+  Clear authentication.
+  """
   flask_login.logout_user()
   return redirect(url_for('api_root'))
 
+@app.route('/')
+def api_root():
+  """Sitemap"""
+  func_list = {}
+  for rule in app.url_map.iter_rules():
+    if rule.endpoint != 'static':
+      func_list[rule.rule] = app.view_functions[rule.endpoint].__doc__
+  return jsonify(func_list)
 if __name__ == '__main__':
-  app.run()
+  app.run(port=16723, debug=True)

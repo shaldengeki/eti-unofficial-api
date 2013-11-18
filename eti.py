@@ -122,7 +122,10 @@ class BaseObject(object):
     translatedDict = {}
     for dbField in attrDict:
       if dbField in self.dbFields:
-        translatedDict[self.dbFields[dbField][1]] = getBuiltIn(self.dbFields[dbField][0])(attrDict[dbField])
+        if attrDict[dbField] is None:
+          translatedDict[self.dbFields[dbField][1]] = None
+        else:
+          translatedDict[self.dbFields[dbField][1]] = getBuiltIn(self.dbFields[dbField][0])(attrDict[dbField])
     self.set(translatedDict)
     return self
 
@@ -178,8 +181,11 @@ class Post(BaseObject):
           self.db.fields('topics.*')
           self.db.join('topics ON topics.ll_topicid=posts.ll_topicid')
         elif obj == 'user':
-          self.db.fields('users.*')
+          self.db.fields('users.*', 'user_names.name')
           self.db.join('users ON users.id=posts.userid')
+          self.db.join('user_names ON user_names.user_id=users.id')
+          self.db.join('user_names un2 ON un2.user_id=users.id AND user_names.date < un2.date', joinType="LEFT OUTER")
+          self.db.where("un2.date IS NULL")
 
     dbPost = self.db.firstRow(newCursor=True)
     if not dbPost:
@@ -251,8 +257,11 @@ class PostList(BaseList):
     if includes is not None:
       for include in includes:
         if include == 'user':
-          self.db.fields('users.*')
+          self.db.fields('users.*', 'user_names.name')
           self.db.join('users ON posts.userid=users.id')
+          self.db.join('user_names ON user_names.user_id=users.id')
+          self.db.join('user_names un2 ON un2.user_id=users.id AND user_names.date < un2.date', joinType="LEFT OUTER")
+          self.db.where("un2.date IS NULL")
         elif include == 'topic':
           self.db.fields('topics.*')
           self.db.join('topics ON posts.ll_topicid=topics.ll_topicid')
@@ -318,13 +327,15 @@ class Topic(BaseObject):
         if include == 'tags':
           includeTags = True
         elif include == 'user':
-          self.db.fields('users.*')
+          self.db.fields('users.*', 'user_names.name')
           self.db.join('users ON users.id=topics.userid')
+          self.db.join('user_names ON user_names.user_id=users.id')
+          self.db.join('user_names un2 ON un2.user_id=users.id AND user_names.date < un2.date', joinType="LEFT OUTER")
+          self.db.where("un2.date IS NULL")
 
     dbTopic = self.db.firstRow(newCursor=True)
     if not dbTopic:
       raise InvalidTopicError(self)
-
     self.setDB(dbTopic)
 
     if includeTags:
@@ -387,7 +398,7 @@ class TopicList(BaseList):
       includeTagIDs = [str(int(tag.id)) for tag in self._includeTags]
     super(TopicList, self).search(query=query)
     if self._includeTags:
-      self.db.table("tags_topics").fields('tags_topics.*').join("topics ON topics.ll_topicid=tags_topics.topic_id").where(('tag_id IN (' + ','.join(['%s'] * len(includeTagIDs)) + ')', includeTagIDs))
+      self.db.table("tags_topics").fields('tags_topics.*').join("topics ON topics.ll_topicid=tags_topics.topic_id").where(tag_id=includeTagIDs)
     self.db.fields('topics.*')
 
     includeTags = False    
@@ -397,17 +408,18 @@ class TopicList(BaseList):
           includeTags = True
         elif include == 'user':
           self.db.fields('users.*')
-          self.db.join('users ON userid=id')
+          self.db.join('users ON userid=users.id')
 
     if query is not None:
       self.db.match(['topics.title'], query)
 
     resultTopics = []
-    print self.db.queryString()
-    print self.db._params
-    for topic in self.db.query():
-      newTopic = Topic(self.db, topic['ll_topicid'])
-      resultTopics.append(newTopic.setDB(topic))
+    topics = self.db.list()
+    for topic in topics:
+      newTopic = Topic(self.db, topic['ll_topicid']).setDB(topic)
+      if includes:
+        newTopic.load(includes=includes)
+      resultTopics.append(newTopic)
 
     if includeTags or self._excludeTags:
       [topic.set({'tags': topic.getTags()}) for topic in resultTopics]
@@ -424,6 +436,7 @@ class User(BaseObject):
   '''
   dbFields = {
     'id': ('int', 'id'),
+    'name': ('unicode', 'name'),
     'created': ('int', 'created'),
     'lastactive': ('int', 'last_active'),
     'good_tokens': ('int', 'good_tokens'),
@@ -468,6 +481,8 @@ class User(BaseObject):
       attrDict['im'] = attrDict['im'] if attrDict['im'] != 'NULL' else None
     if 'picture' in attrDict:
       attrDict['picture'] = attrDict['picture'] if attrDict['picture'] != 'NULL' else None
+    if 'name' in attrDict:
+      attrDict['name'] = attrDict['name'] if attrDict['name'] != 'NULL' else None
     return super(User, self).setDB(attrDict)
 
   def load(self):
@@ -483,10 +498,11 @@ class User(BaseObject):
       if not dbUser:
         raise InvalidUserError(self)
       dbNames = self.db.table("user_names").where(user_id=str(self.id)).order("date DESC").query()
-      names = [{'name': name['name'], 'date': int(pytz.utc.localize(name['date']).strftime('%s'))} for name in dbNames]
+      names = [{'name': name['name'], 'date': int(pytz.utc.localize(name['date']).strftime('%s'))} for name in dbNames if name['date'] is not None]
     self.setDB(dbUser)
     self.set({
-      'names': names
+      'names': names,
+      'name': max(names, key=lambda x: x['date'])['name']
     })
     return self
 
