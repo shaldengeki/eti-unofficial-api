@@ -358,7 +358,7 @@ class Topic(BaseObject):
     Fetches topic posts.
     """
     dbTopicPosts = self.db.table("posts").where(ll_topicid=str(self.id)).order("ll_messageid ASC").query()
-    return [Post(self.db, int(dbPost['ll_messageid'])) for dbPost in dbTopicPosts]
+    return [Post(self.db, int(dbPost['ll_messageid'])).setDB(dbPost) for dbPost in dbTopicPosts]
 
   @property
   def users(self):
@@ -502,7 +502,7 @@ class User(BaseObject):
     self.setDB(dbUser)
     self.set({
       'names': names,
-      'name': max(names, key=lambda x: x['date'])['name']
+      'name': max(names, key=lambda x: x['date'])['name'] if names else u''
     })
     return self
 

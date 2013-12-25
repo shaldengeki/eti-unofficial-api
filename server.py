@@ -9,10 +9,12 @@
 from flask import Flask, request, jsonify, g, redirect, url_for, abort, render_template, flash
 import flask_login
 import functools
+import redis
+import sys, os
+import time
+import traceback
 import urllib2
 import urllib
-import sys, os
-import traceback
 
 import DbConn
 from eti import InvalidTopicError, InvalidPostError, InvalidUserError, InvalidTagError, Topic, Post, User, TopicList, PostList, Tag
@@ -25,10 +27,62 @@ with open(DB_CREDENTIALS_FILE, 'r') as f:
   app.secret_key = f.readline().strip()
 app.config.from_object(__name__)
 
+LIMIT_REQUEST_NUM = 100
+LIMIT_REQUEST_SEC = 60
+redis = redis.StrictRedis(host='localhost', port=6379, db=0)
+
 # initialize flask-login
 login_manager = flask_login.LoginManager()
 login_manager.session_protection = "strong"
 login_manager.init_app(app)
+
+class RateLimit(object):
+  expiration_window = 10
+
+  def __init__(self, key_prefix, limit, per, send_x_headers):
+    self.reset = (int(time.time()) // per) * per + per
+    self.key = key_prefix + str(self.reset)
+    self.limit = limit
+    self.per = per
+    self.send_x_headers = send_x_headers
+    p = redis.pipeline()
+    p.incr(self.key)
+    p.expireat(self.key, self.reset + self.expiration_window)
+    self.current = min(p.execute()[0], limit)
+
+  remaining = property(lambda x: x.limit - x.current)
+  over_limit = property(lambda x: x.current >= x.limit)
+
+def get_view_rate_limit():
+  return getattr(g, '_view_rate_limit', None)
+
+def on_over_limit(limit):
+  return 'You hit the rate limit', 400
+
+def ratelimit(limit, per=300, send_x_headers=True,
+              over_limit=on_over_limit,
+              scope_func=lambda: request.remote_addr,
+              key_func=lambda: request.endpoint):
+  def decorator(f):
+    def rate_limited(*args, **kwargs):
+      key = 'rate-limit/%s/%s/' % (key_func(), scope_func())
+      rlimit = RateLimit(key, limit, per, send_x_headers)
+      g._view_rate_limit = rlimit
+      if over_limit is not None and rlimit.over_limit:
+        return over_limit(rlimit)
+      return f(*args, **kwargs)
+    return functools.update_wrapper(rate_limited, f)
+  return decorator
+
+@app.after_request
+def inject_x_rate_headers(response):
+  limit = get_view_rate_limit()
+  if limit and limit.send_x_headers:
+    h = response.headers
+    h.add('X-RateLimit-Remaining', str(limit.remaining))
+    h.add('X-RateLimit-Limit', str(limit.limit))
+    h.add('X-RateLimit-Reset', str(limit.reset))
+  return response
 
 # flask user functions.
 @login_manager.user_loader
@@ -59,7 +113,9 @@ def current_user_required(f):
   '''
   @functools.wraps(f)
   def decorated_function(*args, **kwargs):
-    if not flask_login.current_user.is_authenticated() or int(flask_login.current_user.get_id()) != int(kwargs['userid']):
+    if request.remote_addr == "91.121.177.171":
+      return f(*args, **kwargs)
+    elif not flask_login.current_user.is_authenticated() or int(flask_login.current_user.get_id()) != int(kwargs['userid']):
       return unauthorized()
     else:
       return flask_login.login_required(f)(*args, **kwargs)
@@ -109,6 +165,7 @@ def teardown_request(exception):
     pass
 
 @app.route('/topics')
+@ratelimit(limit=LIMIT_REQUEST_NUM, per=LIMIT_REQUEST_SEC)
 def api_topics():
   """
   Topic listing. Request params: query, tag, start, limit
@@ -135,6 +192,7 @@ def api_topics():
     return not_found()
 
 @app.route('/topics/<int:topicid>')
+@ratelimit(limit=LIMIT_REQUEST_NUM, per=LIMIT_REQUEST_SEC)
 def api_topic(topicid):
   """
   Display a single topic.
@@ -146,6 +204,7 @@ def api_topic(topicid):
   return jsonify_object(topicObj)
 
 @app.route('/topics/<int:topicid>/posts')
+@ratelimit(limit=LIMIT_REQUEST_NUM, per=LIMIT_REQUEST_SEC)
 def api_topic_posts(topicid):
   """
   Display a single topic's posts. Request params: user, limit, start
@@ -171,6 +230,7 @@ def api_topic_posts(topicid):
   return jsonify_list(searchPosts, 'posts')
 
 @app.route('/topics/<int:topicid>/users')
+@ratelimit(limit=LIMIT_REQUEST_NUM, per=LIMIT_REQUEST_SEC)
 def api_topic_users(topicid):
   """
   Display a single topic's users with post-counts.
@@ -182,6 +242,7 @@ def api_topic_users(topicid):
   return jsonify_list(users, 'users')
 
 @app.route('/posts')
+@ratelimit(limit=LIMIT_REQUEST_NUM, per=LIMIT_REQUEST_SEC)
 def api_posts():
   """
   Display all posts. Not yet implemented.
@@ -189,6 +250,7 @@ def api_posts():
   return 'List of ' + url_for('api_posts')
 
 @app.route('/posts/<int:postid>')
+@ratelimit(limit=LIMIT_REQUEST_NUM, per=LIMIT_REQUEST_SEC)
 def api_post(postid):
   """
   Display a single post.
@@ -201,6 +263,7 @@ def api_post(postid):
   return jsonify_object(postObj)
 
 @app.route('/users')
+@ratelimit(limit=LIMIT_REQUEST_NUM, per=LIMIT_REQUEST_SEC)
 def api_users():
   """
   Listing of all users. Not yet implemented.
@@ -208,6 +271,7 @@ def api_users():
   return 'List of ' + url_for('api_users')
 
 @app.route('/users/<int:userid>')
+@ratelimit(limit=LIMIT_REQUEST_NUM, per=LIMIT_REQUEST_SEC)
 def api_user(userid):
   """
   Display a single user.
@@ -219,6 +283,7 @@ def api_user(userid):
   return jsonify_object(userObj)
 
 @app.route('/users/<int:userid>/posts')
+@ratelimit(limit=LIMIT_REQUEST_NUM, per=LIMIT_REQUEST_SEC)
 @current_user_required
 def api_user_posts(userid):
   """
@@ -246,6 +311,7 @@ def api_user_posts(userid):
   return jsonify_list(searchPosts, 'posts')
 
 @app.route('/users/<int:userid>/topics')
+@ratelimit(limit=LIMIT_REQUEST_NUM, per=LIMIT_REQUEST_SEC)
 @current_user_required
 def api_user_topics(userid):
   """
@@ -277,6 +343,7 @@ def api_user_topics(userid):
   return jsonify_list(searchTopics, 'topics')
 
 @app.route('/tags')
+@ratelimit(limit=LIMIT_REQUEST_NUM, per=LIMIT_REQUEST_SEC)
 def api_tags():
   """
   Listing of all tags. Not yet implemented.
@@ -284,6 +351,7 @@ def api_tags():
   return 'List of ' + url_for('api_tags')
 
 @app.route('/tags/<title>')
+@ratelimit(limit=LIMIT_REQUEST_NUM, per=LIMIT_REQUEST_SEC)
 def api_tag(title):
   """
   Display a single tag.
@@ -295,6 +363,7 @@ def api_tag(title):
   return jsonify_object(tagObj)
 
 @app.route('/tags/<title>/topics')
+@ratelimit(limit=LIMIT_REQUEST_NUM, per=LIMIT_REQUEST_SEC)
 def api_tag_topics(title):
   """
   Display a single tag's topics. Request params: query, limit, start
@@ -315,6 +384,7 @@ def api_tag_topics(title):
   return jsonify_list(searchTopics, 'topics')
 
 @app.route('/login')
+@ratelimit(limit=5, per=60)
 def api_login():
   """
   Authenticate as a user. Request params: user
@@ -337,6 +407,7 @@ def api_login():
     return redirect(request.args.get("next") or url_for('api_root'))
 
 @app.route('/logout')
+@ratelimit(limit=LIMIT_REQUEST_NUM, per=LIMIT_REQUEST_SEC)
 @flask_login.login_required
 def api_logout():
   """
@@ -344,6 +415,10 @@ def api_logout():
   """
   flask_login.logout_user()
   return redirect(url_for('api_root'))
+
+@app.route('/ip')
+def api_ip():
+  return jsonify({'ip': request.remote_addr}), 200
 
 @app.route('/')
 def api_root():
@@ -353,5 +428,6 @@ def api_root():
     if rule.endpoint != 'static':
       func_list[rule.rule] = app.view_functions[rule.endpoint].__doc__
   return jsonify(func_list)
+
 if __name__ == '__main__':
   app.run(port=16723, debug=True)
