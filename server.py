@@ -57,7 +57,7 @@ def get_view_rate_limit():
   return getattr(g, '_view_rate_limit', None)
 
 def on_over_limit(limit):
-  return 'You hit the rate limit', 400
+  return 'You are limited to %s requests every %s seconds' % (LIMIT_REQUEST_NUM, LIMIT_REQUEST_SEC), 400
 
 def ratelimit(limit, per=300, send_x_headers=True,
               over_limit=on_over_limit,
