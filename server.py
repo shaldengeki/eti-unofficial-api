@@ -9,7 +9,9 @@
 from flask import Flask, request, jsonify, g, redirect, url_for, abort, render_template, flash
 import flask_login
 import functools
+import json
 import redis
+import socket
 import sys, os
 import time
 import traceback
@@ -372,15 +374,24 @@ def api_tag_topics(title):
     tagObj = Tag(g.db, title).load()
   except InvalidTagError:
     return not_found()
-  topicList = TopicList(g.db).tags([tagObj])
-  query = request.args['query'] if 'query' in request.args else None
-  if 'limit' in request.args:
-    requestedLimit = int(request.args['limit'])
-    topicList.limit(1000 if requestedLimit > 1000 or requestedLimit < 1 else requestedLimit)
-  if 'start' in request.args:
-    requestedStart = int(request.args['start'])
-    topicList.start(0 if requestedStart < 0 else requestedStart)
-  searchTopics = [topic.dict() for topic in topicList.search(query=query, includes=['user', 'tags'])]
+
+  # send a query.
+  sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+  sock.connect("/home/shaldengeki/tagd.sock")
+  sock.send(str(tagObj.id))
+  data = sock.recv(1024)
+  sock.close()
+  tag_topics = json.loads(data)
+  searchTopics = [Topic(g.db, topic_id).load(includes=['tags']).dict() for topic_id in tag_topics]
+  # topicList = TopicList(g.db).topics(tag_topics)
+  # query = request.args['query'] if 'query' in request.args else None
+  # if 'limit' in request.args:
+  #   requestedLimit = int(request.args['limit'])
+  #   topicList.limit(1000 if requestedLimit > 1000 or requestedLimit < 1 else requestedLimit)
+  # if 'start' in request.args:
+  #   requestedStart = int(request.args['start'])
+  #   topicList.start(0 if requestedStart < 0 else requestedStart)
+  # searchTopics = [topic.dict() for topic in topicList.search(query=query, includes=['user', 'tags'])]
   return jsonify_list(searchTopics, 'topics')
 
 @app.route('/login')

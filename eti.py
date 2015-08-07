@@ -372,7 +372,7 @@ class TopicList(BaseList):
   '''
   Topic list object for ETI unofficial API.
   '''
-  def __init__(self, db, tags=None):
+  def __init__(self, db, tags=None, topics=None):
     super(TopicList, self).__init__(db)
     self._table = "topics"
     self._includeTags = []
@@ -381,6 +381,8 @@ class TopicList(BaseList):
     self._order = "lastPostTime DESC"
     if tags is not None:
       self.tags(tags)
+    if topics is not None:
+      self.topics(topics)
   def includeTag(self, tag):
     self._includeTags.append(tag)
     return self
@@ -389,6 +391,9 @@ class TopicList(BaseList):
     return self
   def tags(self, tags):
     self._includeTags = tags
+    return self
+  def topics(self, topics):
+    self._topics = topics
     return self
   def firstPost(self, firstPost):
     self._firstPost = bool(firstPost)
